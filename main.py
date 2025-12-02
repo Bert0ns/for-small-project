@@ -2,6 +2,8 @@ from typing import Final
 from utils import Point3D, read_points_from_csv
 import sys
 from pathlib import Path
+import mip
+import numpy as np
 
 # Path to building data files
 path_building1 = "data/Building1.csv"
@@ -47,5 +49,3 @@ if __name__ == "__main__":
     entry_points = [p for p in points if p.y <= entry_threshold]
     print(f"Initial point chosen: {initial_points}")
     print(f"Entry points (y <= {entry_threshold}): {len(entry_points)}")
-    
-    
