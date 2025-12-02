@@ -15,6 +15,11 @@ class Point3D:
     z: float = 0.0
 
     def to_tuple(self) -> Tuple[float, float, float]:
+        """Convert the point to a tuple.
+
+        Returns:
+            Tuple[float, float, float]: the point as a tuple (x, y, z)
+        """
         return (self.x, self.y, self.z)
 
     def distance_to(self, other: "Point") -> float:
@@ -32,11 +37,10 @@ class Point3D:
         return math.sqrt(dx * dx + dy * dy + dz * dz)
 
     def __add__(self, other: "Point") -> "Point":
-        return Point(self.x + other.x, self.y + other.y, self.z + other.z)
+        return Point3D(self.x + other.x, self.y + other.y, self.z + other.z)
 
     def __sub__(self, other: "Point") -> "Point":
-        return Point(self.x - other.x, self.y - other.y, self.z - other.z)
-
+        return Point3D(self.x - other.x, self.y - other.y, self.z - other.z)
 
 def read_points_from_csv(path: str, delimiter: str = ",", skip_header: bool = True):
     """Read a CSV file and return a list of Point3D objects.
@@ -52,7 +56,7 @@ def read_points_from_csv(path: str, delimiter: str = ",", skip_header: bool = Tr
         except Exception as exc:
             raise ValueError(f"Cannot convert '{s}' to float") from exc
 
-    with open(path, newline="") as fh:
+    with open(path, newline="", encoding="utf-8") as fh:
         reader = csv.reader(fh, delimiter=delimiter)
         rows: Iterator[Iterable[str]] = reader
         if skip_header:
