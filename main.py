@@ -1,13 +1,11 @@
 from typing import Final
-from utils import Point3D, read_points_from_csv
 import sys
 from pathlib import Path
 import mip
 import numpy as np
+from utils import Point3D, read_points_from_csv
 
-# Path to building data files
-path_building1 = "data/Building1.csv"
-path_building2 = "data/Building2.csv"
+
 # Number of drones
 K = 4
 # Speed constants (meters per second)
@@ -40,12 +38,12 @@ if __name__ == "__main__":
     # Heuristic to pick building thresholds based on filename
     name = csv_path.name.lower()
     if "1" in name or "edificio1" in name or "building1" in name:
-        entry_threshold = 12.5
+        ENTRY_THRESHOLD = 12.5
         initial_points = INITIAL_POINT_B1
     else:
-        entry_threshold = -20.0
+        ENTRY_THRESHOLD = -20.0
         initial_points = INITIAL_POINT_B2
 
-    entry_points = [p for p in points if p.y <= entry_threshold]
+    entry_points = [p for p in points if p.y <= ENTRY_THRESHOLD]
     print(f"Initial point chosen: {initial_points}")
-    print(f"Entry points (y <= {entry_threshold}): {len(entry_points)}")
+    print(f"Entry points (y <= {ENTRY_THRESHOLD}): {len(entry_points)}")
