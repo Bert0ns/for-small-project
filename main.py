@@ -16,19 +16,6 @@ SPEED_HORIZONTAL = 1.5
 INITIAL_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
 INITIAL_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
 
-"""points_b1 = read_points_from_csv(path_building1)
-    print("Points in Building 1:")
-    print(points_b1)
-
-    points_b2 = read_points_from_csv(path_building2)
-    print("Points in Building 2:")
-    print(points_b2)
-
-    print("Initial Point Building 1:", INITIAL_POINT_B1)
-    print("Initial Point Building 2:", INITIAL_POINT_B2)
-
-    ENTRY_POINTS_B1: Final[list[Point3D]] = [p for p in points_b1 if p.y <= 12.5]
-    ENTRY_POINTS_B2: Final[list[Point3D]] = [p for p in points_b2 if p.y <= -20.0]"""
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -60,4 +47,5 @@ if __name__ == "__main__":
     entry_points = [p for p in points if p.y <= entry_threshold]
     print(f"Initial point chosen: {initial_points}")
     print(f"Entry points (y <= {entry_threshold}): {len(entry_points)}")
+    
     
