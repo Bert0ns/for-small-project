@@ -132,3 +132,40 @@ def calc_time_between_points(
     return calc_time_for_movement(
         speed_lateral, speed_vertical, length_horizontal, length_vertical
     )
+
+
+def are_points_connected(point_a: Point3D, point_b: Point3D) -> bool:
+    """Check if two points are connected according to the problem rules.
+    
+    Two points A and B are connected if and only if:
+    - the Euclidean distance between A and B is at most 4m, OR
+    - the Euclidean distance between A and B is at most 11m AND
+      two among the coordinates x, y, and z differ by at most 0.5m.
+    
+    Args:
+        point_a (Point3D): first point
+        point_b (Point3D): second point
+        
+    Returns:
+        bool: True if points are connected, False otherwise
+    """
+    distance = point_a.distance_to(point_b)
+    
+    # Rule 1: distance <= 4m
+    if distance <= 4.0:
+        return True
+    
+    # Rule 2: distance <= 11m AND two coordinates differ by <= 0.5m
+    if distance <= 11.0:
+        dx = abs(point_a.x - point_b.x)
+        dy = abs(point_a.y - point_b.y)
+        dz = abs(point_a.z - point_b.z)
+        
+        # Count how many coordinates differ by at most 0.5m
+        count_small_diff = sum([dx <= 0.5, dy <= 0.5, dz <= 0.5])
+        
+        # At least two coordinates must differ by at most 0.5m
+        if count_small_diff >= 2:
+            return True
+    
+    return False
