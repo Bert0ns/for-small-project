@@ -81,17 +81,31 @@ def solve_drone_routing(
         neighbors[entry_idx].append(0)
     
     # Grid points can connect to each other based on connectivity rules
+    # Optimization: only check points within maximum connection distance (11m)
+    print("Building grid connectivity (this may take a while for large instances)...")
+    MAX_DIST = 11.0  # Maximum connection distance
+    
+    # Initialize neighbor lists for all grid points
     for i in range(1, n + 1):
         if i not in neighbors:
             neighbors[i] = []
-        for j in range(1, n + 1):
-            if i != j and are_points_connected(all_nodes[i], all_nodes[j]):
+    
+    for i in range(1, n + 1):
+        if i % 1000 == 0:
+            print(f"  Processing point {i}/{n}...")
+        
+        for j in range(i + 1, n + 1):  # Only check j > i, add both directions
+            # Quick distance check before expensive connectivity check
+            dist = all_nodes[i].distance_to(all_nodes[j])
+            if dist <= MAX_DIST and are_points_connected(all_nodes[i], all_nodes[j]):
                 neighbors[i].append(j)
-                if (i, j) not in travel_time:
-                    travel_time[(i, j)] = calc_time_between_points(
-                        all_nodes[i], all_nodes[j],
-                        speed_horizontal, speed_up, speed_down
-                    )
+                neighbors[j].append(i)
+                travel_ij = calc_time_between_points(
+                    all_nodes[i], all_nodes[j],
+                    speed_horizontal, speed_up, speed_down
+                )
+                travel_time[(i, j)] = travel_ij
+                travel_time[(j, i)] = travel_ij
     
     print(f"Graph built successfully.")
     
@@ -113,66 +127,96 @@ def solve_drone_routing(
     
     print(f"Using greedy constructive heuristic for {len(reachable)-1} reachable points with {num_drones} drones...")
     
-    # Greedy constructive heuristic with nearest neighbor
+    # Modified greedy: Use cluster-based assignment
+    # Assign all reachable points to drones in a round-robin fashion with nearest neighbor within each drone
     routes = {k: [0] for k in range(1, num_drones + 1)}
     route_times = {k: 0.0 for k in range(1, num_drones + 1)}
     unvisited = reachable - {0}  # All reachable grid points
-    drone_positions = {k: 0 for k in range(1, num_drones + 1)}
     
-    # Main greedy loop
+    # Start each drone at an entry point (if available)
+    entry_list = list(entry_indices)
+    for k in range(1, min(num_drones + 1, len(entry_list) + 1)):
+        if k - 1 < len(entry_list):
+            entry = entry_list[k - 1]
+            routes[k].append(entry)
+            route_times[k] = travel_time[(0, entry)]
+            unvisited.discard(entry)
+    
+    # For each drone, perform nearest neighbor tour from its starting point
+    for k in range(1, num_drones + 1):
+        if len(routes[k]) == 1:  # Only has base, didn't get an entry point
+            continue
+            
+        current = routes[k][-1]
+        drone_visited = {current, 0}
+        
+        # Nearest neighbor from current position
+        while True:
+            nearest = None
+            nearest_time = float('inf')
+            
+            for candidate in unvisited:
+                if candidate in neighbors.get(current, []):
+                    t = travel_time.get((current, candidate), float('inf'))
+                    if t < nearest_time:
+                        nearest_time = t
+                        nearest = candidate
+            
+            if nearest is None:
+                # No more neighbors, this drone is done
+                break
+            
+            routes[k].append(nearest)
+            route_times[k] += nearest_time
+            unvisited.discard(nearest)
+            drone_visited.add(nearest)
+            current = nearest
+    
+    # Assign remaining unvisited points to the drone with minimum time
+    # using BFS from each drone's current position
     while unvisited:
-        # For each drone, find the best next point from its current position
+        # Find which drone can reach an unvisited point most quickly
         best_drone = None
         best_point = None
-        best_time_increase = float('inf')
+        best_path = None
+        best_time = float('inf')
         
         for k in range(1, num_drones + 1):
-            current_pos = drone_positions[k]
+            current = routes[k][-1]
+            # BFS to find nearest unvisited point
+            queue = [(current, 0, [current])]
+            visited_bfs = {current}
             
-            # Find nearest unvisited point from current position
-            for candidate in unvisited:
-                if candidate in neighbors.get(current_pos, []):
-                    travel = travel_time.get((current_pos, candidate), float('inf'))
-                    # Consider load balancing: prefer drone with less total time
-                    # But prioritize minimizing travel distance
-                    time_increase = route_times[k] + travel
-                    
-                    if travel < best_time_increase:
-                        best_time_increase = travel
+            while queue and best_point is None:
+                node, time_so_far, path = queue.pop(0)
+                
+                if node in unvisited:
+                    if time_so_far < best_time:
+                        best_time = time_so_far
                         best_drone = k
-                        best_point = candidate
+                        best_point = node
+                        best_path = path[1:]  # Exclude starting point
+                    break
+                
+                for neighbor in neighbors.get(node, []):
+                    if neighbor not in visited_bfs:
+                        visited_bfs.add(neighbor)
+                        travel_t = travel_time.get((node, neighbor), 0)
+                        queue.append((neighbor, time_so_far + travel_t, path + [neighbor]))
         
         if best_point is None:
-            # No direct connection found - need to backtrack or go via entry
-            # Try going back to base and entering from another entry point
-            available_entries = entry_indices & unvisited
-            if available_entries:
-                # Pick drone with minimum time and send to an unvisited entry
-                min_time_drone = min(route_times.keys(), key=lambda k: route_times[k])
-                current_pos = drone_positions[min_time_drone]
-                
-                # Go back to base
-                if current_pos != 0:
-                    routes[min_time_drone].append(0)
-                    route_times[min_time_drone] += travel_time.get((current_pos, 0), 0)
-                    drone_positions[min_time_drone] = 0
-                
-                # Go to an unvisited entry point
-                best_point = min(available_entries, 
-                                key=lambda e: travel_time.get((0, e), float('inf')))
-                best_drone = min_time_drone
-            else:
-                # Cannot reach remaining points
-                print(f"Warning: {len(unvisited)} points remain unreachable")
-                break
+            # No path found to remaining points
+            break
         
-        # Assign best_point to best_drone
-        if best_drone and best_point:
-            current_pos = drone_positions[best_drone]
-            routes[best_drone].append(best_point)
-            route_times[best_drone] += travel_time.get((current_pos, best_point), 0)
-            drone_positions[best_drone] = best_point
-            unvisited.remove(best_point)
+        # Add the path to the best drone
+        for point in best_path:
+            if point in unvisited:
+                routes[best_drone].append(point)
+                route_times[best_drone] += travel_time.get((routes[best_drone][-2], point), 0)
+                unvisited.discard(point)
+    
+    if unvisited:
+        print(f"Warning: {len(unvisited)} points remain unreachable")
     
     # Close all routes: return to base
     for k in routes:
