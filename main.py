@@ -114,9 +114,10 @@ def solve_drone_routing(
             neighbors[i] = []
     
     # Build undirected edges between connected grid points
+    progress_interval = max(1000, n // 10)  # Report every 10% or 1000 points
     for i in range(1, n + 1):
-        if i % 1000 == 0:
-            print(f"  Processing point {i}/{n}...")
+        if i % progress_interval == 0:
+            print(f"  Processing point {i}/{n}... ({100*i//n}%)")
         
         for j in range(i + 1, n + 1):  # Only check j > i to avoid duplicates
             # Quick Euclidean distance check before expensive connectivity check
