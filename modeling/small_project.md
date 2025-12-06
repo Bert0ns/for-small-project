@@ -36,12 +36,12 @@ Two instances of the problem are given in the attached files Edificio1.csv and E
 Upload a file named Cognome Nome IDpersona.zip, using your surname, name, and personal ID (not
 your student number). This must be a .zip archive containing a folder called Cognome Nome IDpersona
 with the following files:
-• the two files Edificio1.csv and Edificio2.csv;
-• one or more Python files that use the mip module to model and solve the problem; there may be
+* the two files Edificio1.csv and Edificio2.csv;
+* one or more Python files that use the mip module to model and solve the problem; there may be
 multiple Python scripts, but the Python script to be executed must be named main.py.
 The script main.py must accept one input argument, which must be a file with the same format as
 Edificio1.csv and Edificio2.csv.
 The person evaluating your project must be able to run it by executing the following two commands
-from the terminal:
-2
+from the terminal.
+
 

@@ -1,8 +1,6 @@
 from typing import Final
 import sys
 from pathlib import Path
-import mip
-import numpy as np
 from utils import Point3D, read_points_from_csv
 
 
@@ -38,7 +36,7 @@ if __name__ == "__main__":
     # Heuristic to pick building thresholds based on filename
     name = csv_path.name.lower()
     if "1" in name or "edificio1" in name or "building1" in name:
-        ENTRY_THRESHOLD = 12.5
+        ENTRY_THRESHOLD = -12.5
         initial_points = INITIAL_POINT_B1
     else:
         ENTRY_THRESHOLD = -20.0

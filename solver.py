@@ -28,7 +28,7 @@ class SubtourElimination(mip.ConstrsGenerator):
         # Check values of variables in the current relaxation/solution
         for (k, i, j), var in self.x_vars.items():
             val = var.x
-            if val is not None and val > 0.5: # If variable is effectively 1
+            if val is not None and float(val) > 0.5: # If variable is effectively 1
                 adj[i].append(j)
 
         # Find connected components using BFS/DFS
@@ -70,7 +70,7 @@ class SubtourElimination(mip.ConstrsGenerator):
                                     outgoing_vars.append(self.x_vars[k, i, j])
                 
                 if outgoing_vars:
-                    model += mip.xsum(outgoing_vars) >= 1
+                    model += mip.xsum(outgoing_vars) >= 1 , f"subtour_elim_{npass}_{depth}_{len(comp)}"
 
 
 class DroneRoutingSolver:
@@ -265,19 +265,19 @@ class DroneRoutingSolver:
         
         # 6. Symmetry Breaking (Optional but recommended)
         # Force drone k to have >= travel time than drone k+1
-        for k in range(self.k_drones - 1):
-             time_k = mip.xsum(self.costs[i, j] * x[k, i, j] for (i, j) in self.arcs)
-             time_next = mip.xsum(self.costs[i, j] * x[k+1, i, j] for (i, j) in self.arcs)
-             model += time_k >= time_next, f"symmetry_{k}"
-        print("Symmetry breaking constraints added.")
+        # for k in range(self.k_drones - 1):
+        #      time_k = mip.xsum(self.costs[i, j] * x[k, i, j] for (i, j) in self.arcs)
+        #      time_next = mip.xsum(self.costs[i, j] * x[k+1, i, j] for (i, j) in self.arcs)
+        #      model += time_k >= time_next, f"symmetry_{k}"
+        # print("Symmetry breaking constraints added.")
         
         # 5. Subtour Elimination (Lazy Constraints)
-        #model.cuts_generator = SubtourElimination(model, x, self.num_nodes, self.k_drones)
-        #model.lazy_constrs_generator = SubtourElimination(model, x, self.num_nodes, self.k_drones)
-        #print("Subtour elimination constraints generator added.")
+        # model.lazy_constrs_generator = SubtourElimination(model, x, self.num_nodes, self.k_drones)
+        # print("Subtour elimination constraints generator added.")
         
         # --- Optimization ---
         model.max_seconds = max_seconds
+        model.threads = -1 # Use 1 thread to avoid OOM
         print("Starting optimization...")
         status = model.optimize()
 
