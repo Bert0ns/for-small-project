@@ -5,6 +5,7 @@
 1. `python3 -m venv .venv`
 2. `source .venv/bin/activate`
 3. `pip install -r requirements.txt`
+    4. If cffi installation fails you need to install build tools: `sudo apt-get update && sudo apt-get install -y build-essential python3-dev libffi-dev`
 
 ## Examples
 
