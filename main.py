@@ -47,3 +47,8 @@ if __name__ == "__main__":
     entry_points = [p for p in points if p.y <= ENTRY_THRESHOLD]
     print(f"Initial point chosen: {initial_points}")
     print(f"Entry points (y <= {ENTRY_THRESHOLD}): {len(entry_points)}")
+
+    from solver import DroneRoutingSolver
+    print("Initializing solver...")
+    solver = DroneRoutingSolver(points, initial_points, ENTRY_THRESHOLD, k_drones=K)
+    solver.solve(max_seconds=300)

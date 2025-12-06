@@ -58,7 +58,10 @@ def read_points_from_csv(path: str, delimiter: str = ",", skip_header: bool = Tr
 
     with open(path, newline="", encoding="utf-8") as fh:
         reader = csv.reader(fh, delimiter=delimiter)
-        rows: Iterator[Iterable[str]] = reader
+        
+        # Filter out comments and empty lines before processing
+        rows = (row for row in reader if row and any(cell.strip() for cell in row) and not row[0].strip().startswith("#"))
+        
         if skip_header:
             # consume header if present
             try:
@@ -67,8 +70,6 @@ def read_points_from_csv(path: str, delimiter: str = ",", skip_header: bool = Tr
                 return points
 
         for row in rows:
-            if not row or all(not cell.strip() for cell in row):
-                continue
             # tolerate rows with >=3 columns; missing columns -> error
             if len(row) < 3:
                 raise ValueError(f"CSV row has fewer than 3 columns: {row}")
