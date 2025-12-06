@@ -37,11 +37,24 @@ Upload a file named Cognome Nome IDpersona.zip, using your surname, name, and pe
 your student number). This must be a .zip archive containing a folder called Cognome Nome IDpersona
 with the following files:
 * the two files Edificio1.csv and Edificio2.csv;
-* one or more Python files that use the mip module to model and solve the problem; there may be
-multiple Python scripts, but the Python script to be executed must be named main.py.
-The script main.py must accept one input argument, which must be a file with the same format as
-Edificio1.csv and Edificio2.csv.
+* one or more Python files that use the mip module to model and solve the problem; 
+there may be multiple Python scripts, but the Python script to be executed must be named main.py.
+The script main.py must accept one input argument, which must be a file with the same format as Edificio1.csv and Edificio2.csv.
 The person evaluating your project must be able to run it by executing the following two commands
-from the terminal.
+from the terminal:
+```bash
+unzip Cognome_Nome_IDpersona.zip
+python Cognome_Nome_IDpersona/main.py Cognome_Nome_IDpersona/Edificio1.csv
+```
+After solving the problem, the program must produce an output in which, for each drone i with i = 1, ..., k, the string Drone i is printed, followed by the sequence of points visited by drone i from the base
+point (which can be assumed to have index 0) until it returns to the base point, as in the following example:
+```text
+Drone 1: 0-4-11-17-...-2-0
+Drone 2: 0-5-6-3-...-7-0
+Drone 3: 0-9-...-0
+Drone 4: 0-12-...-0
+```
+
+
 
 
