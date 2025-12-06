@@ -5,73 +5,6 @@ from typing import List, Tuple, Dict, Set
 from itertools import product
 from utils import Point3D, calc_time_between_points
 
-class SubtourElimination(mip.ConstrsGenerator):
-    """
-    Lazy constraint callback for Subtour Elimination.
-    Identifies disconnected components in the solution and adds cuts to eliminate them.
-    """
-    def __init__(self, model: mip.Model, x_vars: Dict[Tuple[int, int, int], mip.Var], num_nodes: int, num_drones: int):
-        self.model = model
-        self.x_vars = x_vars
-        self.num_nodes = num_nodes # Includes base at index 0
-        self.num_drones = num_drones
-
-    def generate_constrs(self, model: mip.Model, depth: int = 0, npass: int = 0):
-        # Extract active arcs from the current solution
-        # We only care if an arc is used by ANY drone
-        active_arcs = []
-        
-        # x_vars keys are (k, i, j)
-        # We want to build an adjacency list for the graph of visited nodes
-        adj = {i: [] for i in range(self.num_nodes)}
-        
-        # Check values of variables in the current relaxation/solution
-        for (k, i, j), var in self.x_vars.items():
-            val = var.x
-            if val is not None and float(val) > 0.5: # If variable is effectively 1
-                adj[i].append(j)
-
-        # Find connected components using BFS/DFS
-        visited = [False] * self.num_nodes
-        components = []
-
-        for i in range(self.num_nodes):
-            if not visited[i] and adj[i]: # Only consider nodes that are part of some path
-                component = set()
-                stack = [i]
-                visited[i] = True
-                while stack:
-                    u = stack.pop()
-                    component.add(u)
-                    for v in adj[u]:
-                        # We treat the graph as undirected for component finding to catch isolated clusters
-                        # But strictly speaking, we are looking for cycles. 
-                        # However, for VRP, finding components not connected to the depot (node 0) is the standard way.
-                        if not visited[v]:
-                            visited[v] = True
-                            stack.append(v)
-                components.append(component)
-
-        # For each component that does NOT contain the depot (node 0), add a cut
-        for comp in components:
-            if 0 not in comp:
-                # This component is a subtour disconnected from the base
-                # Cut: sum(x_ijk for i in comp, j not in comp, all k) >= 1
-                # This forces at least one drone to leave this set of nodes
-                
-                # Identify outgoing arcs from this component
-                outgoing_vars = []
-                for i in comp:
-                    for j in range(self.num_nodes):
-                        if j not in comp:
-                            # Check if arc (i, j) exists for any drone
-                            for k in range(self.num_drones):
-                                if (k, i, j) in self.x_vars:
-                                    outgoing_vars.append(self.x_vars[k, i, j])
-                
-                if outgoing_vars:
-                    model += mip.xsum(outgoing_vars) >= 1 , f"subtour_elim_{npass}_{depth}_{len(comp)}"
-
 
 class DroneRoutingSolver:
     def __init__(self, points: List[Point3D], base_point: Point3D, entry_threshold: float, k_drones: int = 4):
@@ -263,21 +196,10 @@ class DroneRoutingSolver:
             model += travel_time <= Z, f"makespan_{k}"
         print("Minimax time constraints added.")
         
-        # 6. Symmetry Breaking (Optional but recommended)
-        # Force drone k to have >= travel time than drone k+1
-        # for k in range(self.k_drones - 1):
-        #      time_k = mip.xsum(self.costs[i, j] * x[k, i, j] for (i, j) in self.arcs)
-        #      time_next = mip.xsum(self.costs[i, j] * x[k+1, i, j] for (i, j) in self.arcs)
-        #      model += time_k >= time_next, f"symmetry_{k}"
-        # print("Symmetry breaking constraints added.")
         
-        # 5. Subtour Elimination (Lazy Constraints)
-        # model.lazy_constrs_generator = SubtourElimination(model, x, self.num_nodes, self.k_drones)
-        # print("Subtour elimination constraints generator added.")
         
         # --- Optimization ---
         model.max_seconds = max_seconds
-        model.threads = -1 # Use 1 thread to avoid OOM
         print("Starting optimization...")
         status = model.optimize()
 
@@ -289,41 +211,5 @@ class DroneRoutingSolver:
             print("No solution found.")
 
     def _print_solution(self, x):
-        print("\n--- Drone Routes ---")
-        for k in range(self.k_drones):
-            print(f"Drone {k+1}:")
-            
-            # Reconstruct path
-            # Start at 0
-            curr = 0
-            route = [0]
-            total_time = 0.0
-            
-            while True:
-                next_node = None
-                for j in range(self.num_nodes):
-                    if (curr, j) in self.arcs and x[k, curr, j].x > 0.5:
-                        next_node = j
-                        break
-                
-                if next_node is None:
-                    print("  Error: Broken path")
-                    break
-                
-                time = self.costs[curr, next_node]
-                total_time += time
-                route.append(next_node)
-                curr = next_node
-                
-                if curr == 0:
-                    break
-            
-            # Map back to point indices (0-based for user, but internal 1..N are points 0..N-1)
-            # Route indices: 0 -> Base, i -> Point i-1
-            route_str = "Base"
-            for node in route[1:-1]:
-                route_str += f" -> P{node-1}"
-            route_str += " -> Base"
-            
-            print(f"  Path: {route_str}")
-            print(f"  Total Time: {total_time:.2f} s")
+        pass
+        

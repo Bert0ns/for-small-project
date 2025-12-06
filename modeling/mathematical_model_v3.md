@@ -56,10 +56,17 @@ $$ \sum_{(i,j) \in A} t_{ij} x_{ijk} \le Z \quad \forall k \in K $$
 ### 5. Subtour Elimination (MTZ)
 
 To prevent cycles that do not include the base, we use Miller-Tucker-Zemlin constraints.
-$$ u_i - u_j + M \sum_{k \in K} x_{ijk} \le M - 1 \quad \forall i, j \in P, i \ne j $$
+$$ u_i - u_j + M x_{ijk} \le M - 1 \quad \forall i, j \in P, i \ne j, \forall k \in K, (i,j) \in A $$
 where $M$ is a large constant (e.g., $|P|$).
 Bounds for $u_i$:
-$$ 1 \le u_i \le |P| \quad \forall i \in P $$
+$$ 1 \le u_i \le M \quad \forall i \in P $$
+
+### 6. Entry/Exit Point Constraint
+Drones can only enter/exit the grid through entry points:
+
+$$ x_{Sjk} = 0 \quad  \forall j \notin E_{ntry}, \forall k \in K  $$
+$$ x_{iSk} = 0 \quad  \forall i \notin E_{ntry}, \forall k \in K  $$
+
 
 ## Variable Domains
 
