@@ -101,8 +101,9 @@ class DroneRoutingSolver:
                 - List of points (nodes)
                 - Set of arcs (tuples of node indices)
                 - Dictionary of costs for each arc
+                - Set of entry point indices
         """
-        return self.points, self.arcs, self.costs
+        return self.points, self.arcs, self.costs, self.entry_points_idx
 
     def solve(self, max_seconds: int = 300):
         """
