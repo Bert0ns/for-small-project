@@ -45,6 +45,15 @@ if __name__ == "__main__":
     print(f"Initial point chosen: {base_point}")
 
     from solver import DroneRoutingSolver
+
     print("Initializing solver...")
-    solver = DroneRoutingSolver(points, base_point, ENTRY_THRESHOLD, k_drones=K, speed_up=SPEED_UP, speed_down=SPEED_DOWN, speed_horizontal=SPEED_HORIZONTAL)
+    solver = DroneRoutingSolver(
+        points,
+        base_point,
+        ENTRY_THRESHOLD,
+        k_drones=K,
+        speed_up=SPEED_UP,
+        speed_down=SPEED_DOWN,
+        speed_horizontal=SPEED_HORIZONTAL,
+    )
     solver.solve(max_seconds=300000)
