@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import Tuple
 import math
 import csv
-from typing import Iterable, Iterator
 
 
 @dataclass
@@ -128,15 +127,32 @@ def calc_time_between_points(
     Returns:
         float: time to travel between the two points in seconds
     """
-    delta = point_b - point_a
-    length_horizontal = math.sqrt(delta.x * delta.x + delta.y * delta.y)
-    length_vertical = abs(delta.z)
 
-    if delta.z > 0:
+    diff_x = point_b.x - point_a.x
+    diff_y = point_b.y - point_a.y
+    diff_z = point_b.z - point_a.z
+
+    # Handle special cases for axis-aligned movements
+    if diff_z == 0.0 and diff_y == 0.0:
+        return abs(diff_x) / speed_lateral
+    if diff_x == 0.0 and diff_y == 0.0:
+        return abs(diff_z) / speed_lateral
+    if diff_z == 0.0 and diff_x == 0.0:
+        if diff_y > 0.0:
+            return abs(diff_y) / speed_up
+        else:
+            return abs(diff_y) / speed_down
+
+    # Determine vertical speed based on direction
+    if diff_y > 0.0:
         speed_vertical = speed_up
     else:
         speed_vertical = speed_down
 
+    # Calculate horizontal distance
+    length_horizontal = math.sqrt(diff_x**2 + diff_z**2)
+
+    # Calculate and return the time for movement diagonal in space
     return calc_time_for_movement(
-        speed_lateral, speed_vertical, length_horizontal, length_vertical
+        speed_lateral, speed_vertical, length_horizontal, diff_y
     )

@@ -4,6 +4,9 @@ from utils import Point3D, calc_time_between_points
 
 
 class DroneRoutingSolver:
+    """
+    Solver
+    """
     def __init__(
         self,
         points: List[Point3D],
