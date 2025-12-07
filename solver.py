@@ -7,6 +7,7 @@ class DroneRoutingSolver:
     """
     Solver
     """
+
     def __init__(
         self,
         points: List[Point3D],
@@ -91,7 +92,7 @@ class DroneRoutingSolver:
             self.arcs.add((j, 0))
             self.costs[(j, 0)] = cost_from
         print(f"Total arcs including base: {len(self.arcs)}")
-    
+
     def get_graph(self):
         """
         Returns the graph representation: nodes, arcs, and costs.
@@ -145,12 +146,12 @@ class DroneRoutingSolver:
         # --- Constraints ---
 
         # 1. Visit Every Point Exactly Once (excluding base)
-        # Constraint: sum(x_ijk) over all k, i = 1 for each point j
+        # Constraint: sum(x_ijk) over all k, i for each point j
         for j in range(1, self.num_nodes):
             visit_vars = [
                 x[k, i, j]
                 for k in range(self.k_drones)
-                for i in range(1, self.num_nodes)
+                for i in range(self.num_nodes)
                 if (i, j) in self.arcs
             ]
             model += mip.xsum(visit_vars) == 1, f"visit_{j}"
@@ -198,6 +199,7 @@ class DroneRoutingSolver:
         print("Minimax time constraints added.")
 
         # 5. Subtour Elimination (MTZ)
+        """
         for i in range(1, self.num_nodes):
             for j in range(1, self.num_nodes):
                 if i != j and (i, j) in self.arcs:
@@ -208,18 +210,18 @@ class DroneRoutingSolver:
                             f"subtour_{k}_{i}_{j}",
                         )
         print("Subtour elimination constraints added.")
-        
+        """
 
         # 6. Entry/Exit Point Constraint (maybe is redundant)
-        #for k in range(self.k_drones):
-            #for j in range(1, self.num_nodes):
-                #if j not in self.entry_points_idx:
-                    #if (0, j) in self.arcs:
-                        #model += x[k, 0, j] == 0, f"no_entry_{k}_{j}"
-                    #if (j, 0) in self.arcs:
-                        #model += x[k, j, 0] == 0, f"no_exit_{k}_{j}"
-        #print("Entry/exit point constraints added.")
-        
+        # for k in range(self.k_drones):
+        # for j in range(1, self.num_nodes):
+        # if j not in self.entry_points_idx:
+        # if (0, j) in self.arcs:
+        # model += x[k, 0, j] == 0, f"no_entry_{k}_{j}"
+        # if (j, 0) in self.arcs:
+        # model += x[k, j, 0] == 0, f"no_exit_{k}_{j}"
+        # print("Entry/exit point constraints added.")
+
         # --- Optimization ---
         model.max_seconds = max_seconds
         print("Starting optimization...")
@@ -228,15 +230,20 @@ class DroneRoutingSolver:
         print(f"Optimization status: {status}")
         if status in [mip.OptimizationStatus.OPTIMAL, mip.OptimizationStatus.FEASIBLE]:
             print(f"Objective value (Max Time): {model.objective_value:.4f} seconds")
-            self._print_solution(x)
+            return self._extract_solution(x)
         else:
             print("No solution found.")
+            return None
 
-    def _print_solution(self, x):
+    def _extract_solution(self, x):
+        paths = []
         for k in range(self.k_drones):
             path = [0]
             current_node = 0
-            while True:
+            steps = 0
+            max_steps = self.num_nodes * 2  # Safety limit
+
+            while steps < max_steps:
                 next_node = None
                 # Find the next node in the path
                 # We look for j such that x[k, current_node, j] == 1
@@ -250,10 +257,18 @@ class DroneRoutingSolver:
 
                 path.append(next_node)
                 current_node = next_node
+                steps += 1
 
                 if current_node == 0:
                     break
 
+            if steps >= max_steps:
+                print(
+                    f"Warning: Drone {k+1} path extraction hit safety limit. Possible cycle."
+                )
+
             # Format the path as a string "0-node1-node2-...-0"
             path_str = "-".join(map(str, path))
             print(f"Drone {k+1}: {path_str}")
+            paths.append(path)
+        return paths

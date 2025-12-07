@@ -19,7 +19,14 @@ BASE_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
 BASE_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
 
 
-def htmpl_plot_generator(points: list[Point3D], arcs, entry_points_idx, name: str):
+def htmpl_plot_generator(
+    points: list[Point3D],
+    arcs,
+    entry_points_idx,
+    name: str,
+    output_file="visualizations/graph_visualization.html",
+    paths=None,
+):
     import plotly.graph_objects as go
 
     print("Generating 3D plot with Plotly...")
@@ -79,7 +86,7 @@ def htmpl_plot_generator(points: list[Point3D], arcs, entry_points_idx, name: st
         z=edge_z,
         mode="lines",
         line=dict(color="blue", width=1),
-        opacity=0.3,
+        opacity=0.1,  # Reduced opacity for background arcs
         name="Arcs",
     )
 
@@ -94,7 +101,33 @@ def htmpl_plot_generator(points: list[Point3D], arcs, entry_points_idx, name: st
         name="Base",
     )
 
-    fig = go.Figure(data=[edge_trace, normal_node_trace, entry_node_trace, base_trace])
+    data = [edge_trace, normal_node_trace, entry_node_trace, base_trace]
+
+    # Add paths if provided
+    if paths:
+        colors = ["cyan", "magenta", "yellow", "lime", "purple", "orange"]
+        for k, path in enumerate(paths):
+            path_x = []
+            path_y = []
+            path_z = []
+            for node_idx in path:
+                p = points[node_idx]
+                path_x.append(p.x)
+                path_y.append(p.y)
+                path_z.append(p.z)
+
+            path_trace = go.Scatter3d(
+                x=path_x,
+                y=path_y,
+                z=path_z,
+                mode="lines+markers",
+                line=dict(color=colors[k % len(colors)], width=4),
+                marker=dict(size=4, color=colors[k % len(colors)]),
+                name=f"Drone {k+1}",
+            )
+            data.append(path_trace)
+
+    fig = go.Figure(data=data)
 
     fig.update_layout(
         scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z"),
@@ -102,7 +135,6 @@ def htmpl_plot_generator(points: list[Point3D], arcs, entry_points_idx, name: st
         title=f"3D Graph Visualization - {name}",
     )
 
-    output_file = "visualizations/graph_visualization.html"
     fig.write_html(output_file)
     print(f"3D visualization saved to {output_file}")
 
@@ -155,4 +187,26 @@ if __name__ == "__main__":
         f"Graph has {len(points)} points and {len(arcs)} arcs. number of costs: {len(costs)}"
     )
 
-    htmpl_plot_generator(points, arcs, entry_points_idx, str(csv_path.name))
+    htmpl_plot_generator(
+        points,
+        arcs,
+        entry_points_idx,
+        str(csv_path.name) + "Before solution",
+        output_file="visualizations/graph_visualization_before_solution.html",
+    )
+
+    print("Solving routing problem...")
+    paths = solver.solve(max_seconds=30000)
+
+    if paths:
+        print("Routing problem solved. Generating solution plot...")
+        htmpl_plot_generator(
+            points,
+            arcs,
+            entry_points_idx,
+            str(csv_path.name) + " - Solution",
+            output_file="visualizations/graph_visualization_solution.html",
+            paths=paths,
+        )
+    else:
+        print("No solution found within the time limit.")
