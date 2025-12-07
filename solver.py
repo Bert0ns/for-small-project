@@ -1,8 +1,5 @@
-import mip
-import math
-import numpy as np
 from typing import List, Tuple, Dict, Set
-from itertools import product
+import mip
 from utils import Point3D, calc_time_between_points
 
 
@@ -211,4 +208,3 @@ class DroneRoutingSolver:
             # Format the path as a string "0-node1-node2-...-0"
             path_str = "-".join(map(str, path))
             print(f"Drone {k+1}: {path_str}")
-        
