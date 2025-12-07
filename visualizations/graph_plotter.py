@@ -19,54 +19,7 @@ BASE_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
 BASE_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
 
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python ./main.py <csv_file>", file=sys.stderr)
-        sys.exit(1)
-
-    csv_path = Path(sys.argv[1])
-    if not csv_path.exists() or not csv_path.is_file():
-        print(f"Error: file not found: {csv_path}", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        points = read_points_from_csv(str(csv_path))
-    except Exception as e:
-        print(f"Error reading points from '{csv_path}': {e}", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"Loaded {len(points)} points from {csv_path}")
-
-    # Heuristic to pick building thresholds based on filename
-    name = csv_path.name.lower()
-    if "1" in name or "edificio1" in name or "building1" in name:
-        ENTRY_THRESHOLD = -12.5
-        base_point = BASE_POINT_B1
-    else:
-        ENTRY_THRESHOLD = -20.0
-        base_point = BASE_POINT_B2
-
-    print(f"Initial point chosen: {base_point}")
-
-    from solver import DroneRoutingSolver
-
-    print("Initializing solver...")
-    solver = DroneRoutingSolver(
-        points,
-        base_point,
-        ENTRY_THRESHOLD,
-        k_drones=K,
-        speed_up=SPEED_UP,
-        speed_down=SPEED_DOWN,
-        speed_horizontal=SPEED_HORIZONTAL,
-    )
-
-    points, arcs, costs, entry_points_idx = solver.get_graph()
-
-    print(
-        f"Graph has {len(points)} points and {len(arcs)} arcs. number of costs: {len(costs)}"
-    )
-
+def htmpl_plot_generator(points: list[Point3D], arcs, entry_points_idx, name: str):
     import plotly.graph_objects as go
 
     print("Generating 3D plot with Plotly...")
@@ -146,9 +99,60 @@ if __name__ == "__main__":
     fig.update_layout(
         scene=dict(xaxis_title="X", yaxis_title="Y", zaxis_title="Z"),
         margin=dict(l=0, r=0, b=0, t=0),
-        title=f"3D Graph Visualization - {csv_path.name}",
+        title=f"3D Graph Visualization - {name}",
     )
 
     output_file = "visualizations/graph_visualization.html"
     fig.write_html(output_file)
     print(f"3D visualization saved to {output_file}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print("Usage: python ./main.py <csv_file>", file=sys.stderr)
+        sys.exit(1)
+
+    csv_path = Path(sys.argv[1])
+    if not csv_path.exists() or not csv_path.is_file():
+        print(f"Error: file not found: {csv_path}", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        points = read_points_from_csv(str(csv_path))
+    except Exception as e:
+        print(f"Error reading points from '{csv_path}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Loaded {len(points)} points from {csv_path}")
+
+    # Heuristic to pick building thresholds based on filename
+    name = csv_path.name.lower()
+    if "1" in name or "edificio1" in name or "building1" in name:
+        ENTRY_THRESHOLD = -12.5
+        base_point = BASE_POINT_B1
+    else:
+        ENTRY_THRESHOLD = -20.0
+        base_point = BASE_POINT_B2
+
+    print(f"Initial point chosen: {base_point}")
+
+    from solver import DroneRoutingSolver
+
+    print("Initializing solver...")
+    solver = DroneRoutingSolver(
+        points,
+        base_point,
+        ENTRY_THRESHOLD,
+        k_drones=K,
+        speed_up=SPEED_UP,
+        speed_down=SPEED_DOWN,
+        speed_horizontal=SPEED_HORIZONTAL,
+    )
+
+    points, arcs, costs, entry_points_idx = solver.get_graph()
+
+    print(
+        f"Graph has {len(points)} points and {len(arcs)} arcs. number of costs: {len(costs)}"
+    )
+
+    htmpl_plot_generator(points, arcs, entry_points_idx, str(csv_path.name))
