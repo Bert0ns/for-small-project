@@ -23,12 +23,11 @@ class Point3D:
         """
         return (self.x, self.y, self.z)
 
-    def distance_to(self, other: "Point") -> float:
+    def distance_to(self, other: "Point3D") -> float:
         """Euclidean distance between points in space
 
         Args:
-            other (Point): the other point
-
+            other (Point3D): the other point
         Returns:
             float: the Euclidean distance between the two points
         """
