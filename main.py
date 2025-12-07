@@ -11,8 +11,8 @@ SPEED_UP = 1.0
 SPEED_DOWN = 2.0
 SPEED_HORIZONTAL = 1.5
 # Initial points for each building
-INITIAL_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
-INITIAL_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
+BASE_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
+BASE_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
 
 
 if __name__ == "__main__":
@@ -37,14 +37,14 @@ if __name__ == "__main__":
     name = csv_path.name.lower()
     if "1" in name or "edificio1" in name or "building1" in name:
         ENTRY_THRESHOLD = -12.5
-        initial_points = INITIAL_POINT_B1
+        base_point = BASE_POINT_B1
     else:
         ENTRY_THRESHOLD = -20.0
-        initial_points = INITIAL_POINT_B2
+        base_point = BASE_POINT_B2
 
-    print(f"Initial point chosen: {initial_points}")
+    print(f"Initial point chosen: {base_point}")
 
     from solver import DroneRoutingSolver
     print("Initializing solver...")
-    solver = DroneRoutingSolver(points, initial_points, ENTRY_THRESHOLD, k_drones=K)
+    solver = DroneRoutingSolver(points, base_point, ENTRY_THRESHOLD, k_drones=K, speed_up=SPEED_UP, speed_down=SPEED_DOWN, speed_horizontal=SPEED_HORIZONTAL)
     solver.solve(max_seconds=300000)

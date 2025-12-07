@@ -7,131 +7,85 @@ from utils import Point3D, calc_time_between_points
 
 
 class DroneRoutingSolver:
-    def __init__(self, points: List[Point3D], base_point: Point3D, entry_threshold: float, k_drones: int = 4):
-        self.points = points
-        self.base_point = base_point
+    def __init__(self, points: List[Point3D], base_point: Point3D, entry_threshold: float, k_drones: int = 4, speed_up: float = 1.0, speed_down: float = 2.0, speed_horizontal: float = 1.5):
+        self.points = [base_point] + points
         self.entry_threshold = entry_threshold
         self.k_drones = k_drones
         
         # Constants from problem description
-        self.SPEED_UP = 1.0
-        self.SPEED_DOWN = 2.0
-        self.SPEED_HORIZONTAL = 1.5
+        self.SPEED_UP = speed_up
+        self.SPEED_DOWN = speed_down
+        self.SPEED_HORIZONTAL = speed_horizontal
         
-        # Nodes: 0 is Base, 1..N are points
-        self.num_points = len(points)
-        self.num_nodes = self.num_points + 1
+        self.num_nodes = len(points)
         
         # Precompute valid arcs and costs
-        self.arcs: List[Tuple[int, int]] = []
+        self.arcs: Set[Tuple[int, int]] = set()
+        self.entry_points_idx: Set[int] = set()
         self.costs: Dict[Tuple[int, int], float] = {}
-        self.incoming_arcs: Dict[int, List[int]] = {i: [] for i in range(self.num_nodes)}
-        self.outgoing_arcs: Dict[int, List[int]] = {i: [] for i in range(self.num_nodes)}
         self._build_graph()
 
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
-        print("Building graph with numpy...")
+        print("Building graph...")
         
-        # Convert points to numpy array (N, 3)
-        # points[i] corresponds to node i+1
-        coords = np.array([[p.x, p.y, p.z] for p in self.points])
-        N = self.num_points
+        for i in range(1, self.num_nodes):
+            for j in range(1, self.num_nodes):
+                if i == j:
+                    continue
+                p_i = self.points[i]
+                p_j = self.points[j]
+                isConnected = False
+                
+                euclidean_dist = p_i.distance_to(p_j)
+                if euclidean_dist <=4.0:
+                    isConnected = True
+                elif euclidean_dist <=11.0:
+                    diffs = [abs(p_i.x - p_j.x), abs(p_i.y - p_j.y), abs(p_i.z - p_j.z)]
+                    small_diffs = sum(1 for d in diffs if d <= 0.5)
+                    if small_diffs >= 2:
+                        isConnected = True
+                
+                
+                if isConnected:
+                    cost = calc_time_between_points(
+                        p_i, p_j,
+                        self.SPEED_HORIZONTAL,
+                        self.SPEED_UP,
+                        self.SPEED_DOWN
+                    )
+                    self.arcs.add((i,j))
+                    self.costs[(i, j)] = cost
+        print(f"Total arcs between points: {len(self.arcs)}")
         
-        # --- 1. Arcs between Target Points (1..N) ---
+        # Define set of entry points
+        for i in range(1, self.num_nodes):
+            if self.points[i].y <= self.entry_threshold:
+                self.entry_points_idx.add(i)  
+        print(f"Total entry points: {len(self.entry_points_idx)}")
         
-        # Compute pairwise differences: diffs[i, j, :] = coords[i] - coords[j]
-        # This creates an (N, N, 3) array. For N=2800, this is ~188MB, which is fine.
-        # Using broadcasting: (N, 1, 3) - (1, N, 3)
-        diffs = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
-        
-        # Squared Euclidean distances: (N, N)
-        dists_sq = np.sum(diffs**2, axis=2)
-        dists = np.sqrt(dists_sq)
-        
-        # Connectivity Rules:
-        # Rule 1: dist <= 4
-        connected_mask = dists <= 4.0
-        
-        # Rule 2: dist <= 11 AND at least 2 coords differ by <= 0.5
-        # abs_diffs: (N, N, 3)
-        abs_diffs = np.abs(diffs)
-        small_diffs_count = np.sum(abs_diffs <= 0.5, axis=2) # (N, N)
-        rule2_mask = (dists <= 11.0) & (small_diffs_count >= 2)
-        
-        # Combine rules
-        connected_mask = connected_mask | rule2_mask
-        
-        # Remove self-loops
-        np.fill_diagonal(connected_mask, False)
-        
-        # Get indices of connected pairs
-        # indices are 0-based relative to 'points' list, so they map to nodes 1..N
-        src_indices, dst_indices = np.where(connected_mask)
-        
-        print(f"Found {len(src_indices)} valid arcs between points.")
-        
-        # Calculate travel times for these arcs using utils.py
-        for k in range(len(src_indices)):
-            idx_u = src_indices[k]
-            idx_v = dst_indices[k]
-            
-            p_u = self.points[idx_u]
-            p_v = self.points[idx_v]
-            
-            cost = calc_time_between_points(
-                p_u, p_v, 
-                self.SPEED_HORIZONTAL, 
-                self.SPEED_UP, 
-                self.SPEED_DOWN
-            )
-            
-            u = int(idx_u + 1)
-            v = int(idx_v + 1)
-            
-            self.arcs.append((u, v))
-            self.costs[(u, v)] = cost
-            self.outgoing_arcs[u].append(v)
-            self.incoming_arcs[v].append(u)
-            
-        # --- 2. Arcs between Base (0) and Entry Points ---
-        # Entry points: y <= threshold
-        # We can use numpy to find these indices
-        entry_mask = coords[:, 1] <= self.entry_threshold
-        entry_indices = np.where(entry_mask)[0]
-        
-        print(f"Found {len(entry_indices)} entry points.")
-        
-        for idx in entry_indices:
-            u_node = int(idx + 1)
-            p_point = self.points[idx]
-            
-            # Base -> Entry Point
-            time_out = calc_time_between_points(
-                self.base_point, p_point,
+        # Add arcs from base (0) to entry points and back
+        for j in self.entry_points_idx:
+            p_j = self.points[j]
+            cost_to = calc_time_between_points(
+                self.points[0], p_j,
                 self.SPEED_HORIZONTAL,
                 self.SPEED_UP,
                 self.SPEED_DOWN
             )
-            
-            self.arcs.append((0, u_node))
-            self.costs[(0, u_node)] = time_out
-            self.outgoing_arcs[0].append(u_node)
-            self.incoming_arcs[u_node].append(0)
-            
-            # Entry Point -> Base
-            time_in = calc_time_between_points(
-                p_point, self.base_point,
+            cost_from = calc_time_between_points(
+                p_j, self.points[0],
                 self.SPEED_HORIZONTAL,
                 self.SPEED_UP,
                 self.SPEED_DOWN
             )
+            self.arcs.add((0, j))
+            self.costs[(0, j)] = cost_to
+            self.arcs.add((j, 0))
+            self.costs[(j, 0)] = cost_from
+        print(f"Total arcs including base: {len(self.arcs)}")
             
-            self.arcs.append((u_node, 0))
-            self.costs[(u_node, 0)] = time_in
-            self.outgoing_arcs[u_node].append(0)
-            self.incoming_arcs[0].append(u_node)
-
+        
     def solve(self, max_seconds: int = 300):
         """
         Builds and solves the MIP model for the Drone Routing Problem.
@@ -154,26 +108,33 @@ class DroneRoutingSolver:
         
         # Z = Max time (makespan)
         # This is the variable we want to minimize
-        Z = model.add_var(var_type=mip.CONTINUOUS, name="Z")
-        model.objective = mip.minimize(Z)
+        Z = model.add_var(var_type=mip.CONTINUOUS, name="Z", lb=0.0)
         print("Variable Z created.")
+        
+        # u_i = auxiliary variables for MTZ subtour elimination
+        u = {}
+        for i in range(1, self.num_nodes):
+            u[i] = model.add_var(var_type=mip.CONTINUOUS, name=f"u_{i}", lb=1.0, ub=self.num_nodes - 1)
+        print(f"Auxiliary variables u_i created: {len(u)}")
+        
+        # Obj. function: Minimize Z
+        model.objective = mip.minimize(Z)
         
         # --- Constraints ---
         
         # 1. Visit Every Point Exactly Once (excluding base)
         # Constraint: sum(x_ijk) over all k, i = 1 for each point j
         for j in range(1, self.num_nodes):
-            # Sum over all drones and all incoming arcs to j
-            incoming_vars = [x[k, i, j] for k in range(self.k_drones) for i in self.incoming_arcs[j]]
-            model += mip.xsum(incoming_vars) == 1, f"visit_{j}"
+            visit_vars = [x[k, i, j] for k in range(self.k_drones) for i in range(1, self.num_nodes) if (i, j) in self.arcs]
+            model += mip.xsum(visit_vars) == 1, f"visit_{j}"
         print("Visit constraints added.")
 
         # 2. Flow Conservation
         # Constraint: sum(incoming) = sum(outgoing) for each drone k and point j
         for k in range(self.k_drones):
-            for j in range(1, self.num_nodes):
-                incoming = [x[k, i, j] for i in self.incoming_arcs[j]]
-                outgoing = [x[k, j, m] for m in self.outgoing_arcs[j]]
+            for j in range(self.num_nodes):
+                incoming = [x[k, i, j] for i in range(self.num_nodes) if (i, j) in self.arcs]
+                outgoing = [x[k, j, l] for l in range(self.num_nodes) if (j, l) in self.arcs]
                 model += mip.xsum(incoming) == mip.xsum(outgoing), f"flow_{k}_{j}"
         print("Flow conservation constraints added.")
 
@@ -181,11 +142,10 @@ class DroneRoutingSolver:
         # Each drone leaves base exactly once and returns exactly once
         # Base is node 0
         for k in range(self.k_drones):
-            outgoing_base = [x[k, 0, j] for j in self.outgoing_arcs[0]]
-            incoming_base = [x[k, i, 0] for i in self.incoming_arcs[0]]
-            
-            model += mip.xsum(outgoing_base) == 1, f"depot_out_{k}"
-            model += mip.xsum(incoming_base) == 1, f"depot_in_{k}"
+            depart_vars = [x[k, 0, j] for j in range(1, self.num_nodes) if (0, j) in self.arcs and j in self.entry_points_idx]
+            return_vars = [x[k, j, 0] for j in range(1, self.num_nodes) if (j, 0) in self.arcs and j in self.entry_points_idx]
+            model += mip.xsum(depart_vars) == 1, f"depart_{k}"
+            model += mip.xsum(return_vars) == 1, f"return_{k}"
         print("Depot constraints added.")
 
         # 4. Minimax Time Constraint
@@ -196,7 +156,23 @@ class DroneRoutingSolver:
             model += travel_time <= Z, f"makespan_{k}"
         print("Minimax time constraints added.")
         
+        # 5. Subtour Elimination (MTZ)
+        for i in range(1, self.num_nodes):
+            for j in range(1, self.num_nodes):
+                if i != j and (i, j) in self.arcs:
+                    for k in range(self.k_drones):
+                        model += u[i] - u[j] + (self.num_nodes - 1) * x[k, i, j] <= self.num_nodes - 2, f"subtour_{k}_{i}_{j}"
+        print("Subtour elimination constraints added.")
         
+        # 6. Entry/Exit Point Constraint
+        for k in range(self.k_drones):
+            for j in range(1, self.num_nodes):
+                if j not in self.entry_points_idx:
+                    if (0, j) in self.arcs:
+                        model += x[k, 0, j] == 0, f"no_entry_{k}_{j}"
+                    if (j, 0) in self.arcs:
+                        model += x[k, j, 0] == 0, f"no_exit_{k}_{j}"
+        print("Entry/exit point constraints added.")
         
         # --- Optimization ---
         model.max_seconds = max_seconds
