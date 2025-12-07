@@ -100,6 +100,7 @@ class DroneRoutingSolver:
             max_seconds (int): Maximum time allowed for the solver in seconds.
         """
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
+        model.max_mip_gap = 0.01  # 1% gap
         model.threads = -1  # Use all available threads
 
         # --- Decision Variables ---
@@ -194,17 +195,18 @@ class DroneRoutingSolver:
                             f"subtour_{k}_{i}_{j}",
                         )
         print("Subtour elimination constraints added.")
+        
 
-        # 6. Entry/Exit Point Constraint
-        for k in range(self.k_drones):
-            for j in range(1, self.num_nodes):
-                if j not in self.entry_points_idx:
-                    if (0, j) in self.arcs:
-                        model += x[k, 0, j] == 0, f"no_entry_{k}_{j}"
-                    if (j, 0) in self.arcs:
-                        model += x[k, j, 0] == 0, f"no_exit_{k}_{j}"
-        print("Entry/exit point constraints added.")
-
+        # 6. Entry/Exit Point Constraint (maybe is redundant)
+        #for k in range(self.k_drones):
+            #for j in range(1, self.num_nodes):
+                #if j not in self.entry_points_idx:
+                    #if (0, j) in self.arcs:
+                        #model += x[k, 0, j] == 0, f"no_entry_{k}_{j}"
+                    #if (j, 0) in self.arcs:
+                        #model += x[k, j, 0] == 0, f"no_exit_{k}_{j}"
+        #print("Entry/exit point constraints added.")
+        
         # --- Optimization ---
         model.max_seconds = max_seconds
         print("Starting optimization...")
