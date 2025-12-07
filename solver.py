@@ -91,6 +91,18 @@ class DroneRoutingSolver:
             self.arcs.add((j, 0))
             self.costs[(j, 0)] = cost_from
         print(f"Total arcs including base: {len(self.arcs)}")
+    
+    def get_graph(self):
+        """
+        Returns the graph representation: nodes, arcs, and costs.
+
+        Returns:
+            Tuple containing:
+                - List of points (nodes)
+                - Set of arcs (tuples of node indices)
+                - Dictionary of costs for each arc
+        """
+        return self.points, self.arcs, self.costs
 
     def solve(self, max_seconds: int = 300):
         """
