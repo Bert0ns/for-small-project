@@ -4,6 +4,7 @@ import math
 import csv
 from typing import Iterable, Iterator
 
+
 @dataclass
 class Point3D:
     """
@@ -42,6 +43,7 @@ class Point3D:
     def __sub__(self, other: "Point") -> "Point":
         return Point3D(self.x - other.x, self.y - other.y, self.z - other.z)
 
+
 def read_points_from_csv(path: str, delimiter: str = ",", skip_header: bool = True):
     """Read a CSV file and return a list of Point3D objects.
 
@@ -58,10 +60,16 @@ def read_points_from_csv(path: str, delimiter: str = ",", skip_header: bool = Tr
 
     with open(path, newline="", encoding="utf-8") as fh:
         reader = csv.reader(fh, delimiter=delimiter)
-        
+
         # Filter out comments and empty lines before processing
-        rows = (row for row in reader if row and any(cell.strip() for cell in row) and not row[0].strip().startswith("#"))
-        
+        rows = (
+            row
+            for row in reader
+            if row
+            and any(cell.strip() for cell in row)
+            and not row[0].strip().startswith("#")
+        )
+
         if skip_header:
             # consume header if present
             try:
