@@ -209,4 +209,4 @@ if __name__ == "__main__":
             paths=paths,
         )
     else:
-        print("No solution found within the time limit.")
+        print("Could not print solution paths.")

@@ -132,30 +132,34 @@ class DroneRoutingSolver:
         Z = model.add_var(var_type=mip.CONTINUOUS, name="Z", lb=0.0)
         print("Variable Z created.")
 
-        # u_i = auxiliary variables for MTZ subtour elimination
-        u = {}
-        for i in range(1, self.num_nodes):
-            u[i] = model.add_var(
-                var_type=mip.CONTINUOUS, name=f"u_{i}", lb=1.0, ub=self.num_nodes - 1
-            )
-        print(f"Auxiliary variables u_i created: {len(u)}")
+        # u_i = auxiliary variables for MTZ subtour elimination (Removed)
+        # u = {}
+        # for i in range(1, self.num_nodes):
+        #     u[i] = model.add_var(
+        #         var_type=mip.CONTINUOUS, name=f"u_{i}", lb=1.0, ub=self.num_nodes - 1
+        #     )
+        # print(f"Auxiliary variables u_i created: {len(u)}")
 
         # Obj. function: Minimize Z
         model.objective = mip.minimize(Z)
 
         # --- Constraints ---
 
-        # 1. Visit Every Point Exactly Once (excluding base)
-        # Constraint: sum(x_ijk) over all k, i for each point j
+        # 1. Visit Each Point At Least Once (Relaxed to allow revisits)
+        # We use "At Least Once" because the graph contains dead ends (nodes with degree 1),
+        # which require entering and leaving via the same edge (revisit).
         for j in range(1, self.num_nodes):
-            visit_vars = [
-                x[k, i, j]
-                for k in range(self.k_drones)
-                for i in range(self.num_nodes)
-                if (i, j) in self.arcs
-            ]
-            model += mip.xsum(visit_vars) == 1, f"visit_{j}"
-        print("Visit constraints added.")
+            model += (
+                mip.xsum(
+                    x[k, i, j]
+                    for k in range(self.k_drones)
+                    for i in range(self.num_nodes)
+                    if (i, j) in self.arcs
+                )
+                >= 1,
+                f"visit_{j}",
+            )
+        print("Visit at least once constraints added.")
 
         # 2. Flow Conservation
         # Constraint: sum(incoming) = sum(outgoing) for each drone k and point j
@@ -198,19 +202,10 @@ class DroneRoutingSolver:
             model += travel_time <= Z, f"makespan_{k}"
         print("Minimax time constraints added.")
 
-        # 5. Subtour Elimination (MTZ)
-        """
-        for i in range(1, self.num_nodes):
-            for j in range(1, self.num_nodes):
-                if i != j and (i, j) in self.arcs:
-                    for k in range(self.k_drones):
-                        model += (
-                            u[i] - u[j] + (self.num_nodes - 1) * x[k, i, j]
-                            <= self.num_nodes - 2,
-                            f"subtour_{k}_{i}_{j}",
-                        )
-        print("Subtour elimination constraints added.")
-        """
+        # 5. Subtour Elimination (Iterative / Lazy)
+        # We will handle subtour elimination iteratively in the solve loop.
+        # This avoids the heavy MTZ constraints and allows for revisits.
+        print("Subtour elimination will be handled iteratively.")
 
         # 6. Entry/Exit Point Constraint (maybe is redundant)
         # for k in range(self.k_drones):
@@ -222,18 +217,110 @@ class DroneRoutingSolver:
         # model += x[k, j, 0] == 0, f"no_exit_{k}_{j}"
         # print("Entry/exit point constraints added.")
 
-        # --- Optimization ---
+        # --- Optimization Loop (Iterative Subtour Elimination) ---
         model.max_seconds = max_seconds
-        print("Starting optimization...")
-        status = model.optimize()
+        print("Starting optimization loop...")
 
-        print(f"Optimization status: {status}")
-        if status in [mip.OptimizationStatus.OPTIMAL, mip.OptimizationStatus.FEASIBLE]:
-            print(f"Objective value (Max Time): {model.objective_value:.4f} seconds")
-            return self._extract_solution(x)
-        else:
-            print("No solution found.")
-            return None
+        iteration = 0
+        while True:
+            iteration += 1
+            print(f"--- Iteration {iteration} ---")
+            status = model.optimize()
+            print(f"Optimization status: {status}")
+
+            if status not in [
+                mip.OptimizationStatus.OPTIMAL,
+                mip.OptimizationStatus.FEASIBLE,
+            ]:
+                print("No solution found.")
+                return None
+
+            # Check for subtours
+            subtours = self._find_subtours(x)
+            if not subtours:
+                print("No subtours found. Solution is valid.")
+                print(
+                    f"Objective value (Max Time): {model.objective_value:.4f} seconds"
+                )
+                return self._extract_solution(x)
+
+            print(f"Found {len(subtours)} subtours. Adding constraints...")
+            # Add cut-set constraints for each subtour
+            for component in subtours:
+                # Constraint: sum(x_ij) for i in S, j not in S >= 1
+                # We sum over all drones
+                cut_edges = []
+                for k in range(self.k_drones):
+                    for i in component:
+                        for j in range(self.num_nodes):
+                            if j not in component and (i, j) in self.arcs:
+                                cut_edges.append(x[k, i, j])
+
+                if cut_edges:
+                    model += (
+                        mip.xsum(cut_edges) >= 1,
+                        f"subtour_cut_{iteration}_{list(component)[0]}",
+                    )
+                else:
+                    print(
+                        f"Warning: Component {list(component)[:5]}... has no outgoing edges!"
+                    )
+
+    def _find_subtours(self, x):
+        """
+        Finds connected components in the solution graph.
+        Returns a list of sets, where each set is a component that DOES NOT contain the base (node 0).
+        """
+        # Build adjacency list from active edges
+        adj = {i: [] for i in range(self.num_nodes)}
+        for k in range(self.k_drones):
+            for i, j in self.arcs:
+                if x[k, i, j].x >= 0.5:
+                    adj[i].append(j)
+                    # Note: We treat the graph as directed for traversal,
+                    # but for connectivity check we usually treat it as undirected
+                    # or check reachability from base.
+                    # Here, we check reachability from base.
+
+        visited = set()
+        queue = [0]
+        visited.add(0)
+
+        while queue:
+            u = queue.pop(0)
+            for v in adj[u]:
+                if v not in visited:
+                    visited.add(v)
+                    queue.append(v)
+
+        # If all nodes visited, no subtours (disconnected from base)
+        unvisited = [i for i in range(self.num_nodes) if i not in visited]
+        if not unvisited:
+            return []
+
+        # Group unvisited nodes into components
+        components = []
+        unvisited_set = set(unvisited)
+
+        while unvisited_set:
+            start = next(iter(unvisited_set))
+            q = [start]
+            component = {start}
+            unvisited_set.remove(start)
+
+            while q:
+                u = q.pop(0)
+                # Check neighbors in both directions for "weak" connectivity within component
+                # Or just forward? If we have a cycle A->B->A disconnected from base,
+                # forward search finds it.
+                for v in adj[u]:
+                    if v in unvisited_set:
+                        unvisited_set.remove(v)
+                        component.add(v)
+                        q.append(v)
+            components.append(component)
+
+        return components
 
     def _extract_solution(self, x):
         paths = []
