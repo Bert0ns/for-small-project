@@ -187,5 +187,28 @@ class DroneRoutingSolver:
             print("No solution found.")
 
     def _print_solution(self, x):
-        pass
+        for k in range(self.k_drones):
+            path = [0]
+            current_node = 0
+            while True:
+                next_node = None
+                # Find the next node in the path
+                # We look for j such that x[k, current_node, j] == 1
+                for j in range(self.num_nodes):
+                    if (k, current_node, j) in x and x[k, current_node, j].x >= 0.99:
+                        next_node = j
+                        break
+                
+                if next_node is None:
+                    break
+                
+                path.append(next_node)
+                current_node = next_node
+                
+                if current_node == 0:
+                    break
+            
+            # Format the path as a string "0-node1-node2-...-0"
+            path_str = "-".join(map(str, path))
+            print(f"Drone {k+1}: {path_str}")
         
