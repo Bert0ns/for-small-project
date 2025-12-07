@@ -37,10 +37,10 @@ class Point3D:
         dz = self.z - other.z
         return math.sqrt(dx * dx + dy * dy + dz * dz)
 
-    def __add__(self, other: "Point") -> "Point":
+    def __add__(self, other: "Point3D") -> "Point3D":
         return Point3D(self.x + other.x, self.y + other.y, self.z + other.z)
 
-    def __sub__(self, other: "Point") -> "Point":
+    def __sub__(self, other: "Point3D") -> "Point3D":
         return Point3D(self.x - other.x, self.y - other.y, self.z - other.z)
 
 
