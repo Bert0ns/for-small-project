@@ -59,6 +59,7 @@ if __name__ == "__main__":
         speed_up=SPEED_UP,
         speed_down=SPEED_DOWN,
         speed_horizontal=SPEED_HORIZONTAL,
+        verbose=True,
     )
 
     points, arcs, costs, entry_points_idx = solver.get_graph()

@@ -19,11 +19,12 @@ class DroneRoutingSolver:
         speed_up: float = 1.0,
         speed_down: float = 2.0,
         speed_horizontal: float = 1.5,
+        verbose: bool = False,
     ):
         self.points = [base_point] + points
         self.entry_threshold = entry_threshold
         self.k_drones = k_drones
-
+        self.verbose = verbose
         # Constants from problem description
         self.speed_up = speed_up
         self.speed_down = speed_down
@@ -122,6 +123,7 @@ class DroneRoutingSolver:
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = 0.05  # Relaxed to 5% gap for performance
         model.threads = -1
+        model.verbose = self.verbose
 
         start_time = time.time()
 
