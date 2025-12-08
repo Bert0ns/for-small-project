@@ -2,6 +2,7 @@ from typing import Final
 import sys
 from pathlib import Path
 from utils import Point3D, read_points_from_csv
+from visualizations.plotter import htmpl_plot_generator
 
 
 # Number of drones
@@ -56,4 +57,33 @@ if __name__ == "__main__":
         speed_down=SPEED_DOWN,
         speed_horizontal=SPEED_HORIZONTAL,
     )
-    solver.solve(max_seconds=300000)
+
+    points, arcs, costs, entry_points_idx = solver.get_graph()
+
+    print(
+        f"Graph has {len(points)} points and {len(arcs)} arcs. number of costs: {len(costs)}"
+    )
+
+    htmpl_plot_generator(
+        points,
+        arcs,
+        entry_points_idx,
+        str(csv_path.name) + "Before solution",
+        output_file="visualizations/graph_visualization_before_solution.html",
+    )
+
+    print("Solving routing problem...")
+    paths = solver.solve(max_seconds=300000)
+
+    if paths:
+        print("Routing problem solved. Generating solution plot...")
+        htmpl_plot_generator(
+            points,
+            arcs,
+            entry_points_idx,
+            str(csv_path.name) + " - Solution",
+            output_file="visualizations/graph_visualization_solution.html",
+            paths=paths,
+        )
+    else:
+        print("Could not print solution paths.")

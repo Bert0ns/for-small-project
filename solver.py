@@ -114,8 +114,13 @@ class DroneRoutingSolver:
             max_seconds (int): Maximum time allowed for the solver in seconds.
         """
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
-        model.max_mip_gap = 0.01  # 1% gap
-        model.threads = -1  # Use all available threads
+        model.max_mip_gap = 0.05  # Relaxed to 5% gap for performance
+        model.threads = -1
+
+        # Global timeout tracking
+        import time
+
+        start_time = time.time()
 
         # --- Decision Variables ---
 
@@ -218,13 +223,22 @@ class DroneRoutingSolver:
         # print("Entry/exit point constraints added.")
 
         # --- Optimization Loop (Iterative Subtour Elimination) ---
-        model.max_seconds = max_seconds
         print("Starting optimization loop...")
 
         iteration = 0
         while True:
             iteration += 1
-            print(f"--- Iteration {iteration} ---")
+
+            # Check remaining time
+            elapsed = time.time() - start_time
+            remaining = max_seconds - elapsed
+            if remaining <= 0:
+                print("Global time limit reached.")
+                break
+
+            model.max_seconds = remaining
+            print(f"--- Iteration {iteration} (Time left: {remaining:.1f}s) ---")
+
             status = model.optimize()
             print(f"Optimization status: {status}")
 
@@ -245,7 +259,13 @@ class DroneRoutingSolver:
                 return self._extract_solution(x)
 
             print(f"Found {len(subtours)} subtours. Adding constraints...")
+
             # Add cut-set constraints for each subtour
+            # Limit the number of cuts added per iteration to avoid bloating the model too fast
+            # We prioritize smaller subtours as they are tighter cuts
+            subtours.sort(key=len)
+
+            cuts_added = 0
             for component in subtours:
                 # Constraint: sum(x_ij) for i in S, j not in S >= 1
                 # We sum over all drones
@@ -261,10 +281,21 @@ class DroneRoutingSolver:
                         mip.xsum(cut_edges) >= 1,
                         f"subtour_cut_{iteration}_{list(component)[0]}",
                     )
-                else:
-                    print(
-                        f"Warning: Component {list(component)[:5]}... has no outgoing edges!"
-                    )
+                    cuts_added += 1
+
+                # Safety break if too many cuts (optional, but helps performance)
+                if cuts_added > 50:
+                    print(f"Added 50 cuts (out of {len(subtours)}). Re-optimizing...")
+                    break
+
+            if cuts_added == 0:
+                print(
+                    "Warning: Subtours found but no valid cuts could be generated (no outgoing edges?)."
+                )
+                break
+
+        print("Loop finished without valid solution.")
+        return None
 
     def _find_subtours(self, x):
         """
