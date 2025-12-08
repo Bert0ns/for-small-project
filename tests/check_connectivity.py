@@ -1,96 +1,58 @@
 import sys
 from pathlib import Path
+import networkx as nx
+
+# Add parent directory to path to allow importing modules from there
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
 from utils import Point3D, read_points_from_csv
+from solver import DroneRoutingSolver
 
 
 def check_connectivity(csv_path, base_point, entry_threshold):
     print(f"Checking connectivity for {csv_path}...")
     points = read_points_from_csv(str(csv_path))
-    all_points = [base_point] + points
-    num_nodes = len(all_points)
 
-    adj = {i: [] for i in range(num_nodes)}
+    # Initialize solver to build the graph
+    # We don't care about speeds or k_drones for connectivity check
+    solver = DroneRoutingSolver(
+        points=points, base_point=base_point, entry_threshold=entry_threshold
+    )
 
-    # Build graph
-    # 1. Edges between target points
-    for i in range(1, num_nodes):
-        for j in range(1, num_nodes):
-            if i == j:
-                continue
-            p_i = all_points[i]
-            p_j = all_points[j]
-
-            is_connected = False
-            euclidean_dist = p_i.distance_to(p_j)
-            if euclidean_dist <= 4.0:
-                is_connected = True
-            elif euclidean_dist <= 11.0:
-                diffs = [abs(p_i.x - p_j.x), abs(p_i.y - p_j.y), abs(p_i.z - p_j.z)]
-                small_diffs = sum(1 for d in diffs if d <= 0.5)
-                if small_diffs >= 2:
-                    is_connected = True
-
-            if is_connected:
-                adj[i].append(j)
-
-    # 2. Edges from base to entry points
-    entry_points = []
-    for i in range(1, num_nodes):
-        if all_points[i].y <= entry_threshold:
-            entry_points.append(i)
-            adj[0].append(i)
-            adj[i].append(0)
+    G = solver.graph
+    all_points = solver.points
+    num_nodes = solver.num_nodes
 
     print(f"Total nodes: {num_nodes} (1 base + {num_nodes-1} targets)")
-    print(f"Entry points: {len(entry_points)}")
+    print(f"Entry points: {len(solver.entry_points_idx)}")
 
-    # BFS from 0
-    visited = set()
-    queue = [0]
-    visited.add(0)
+    if nx.is_strongly_connected(G):
+        print("SUCCESS: The graph is fully connected.")
+    else:
+        # Find connected components
+        components = list(nx.strongly_connected_components(G))
+        # Find the component containing the base
+        base_component = set()
+        for comp in components:
+            if 0 in comp:
+                base_component = comp
+                break
 
-    while queue:
-        u = queue.pop(0)
-        for v in adj[u]:
-            if v not in visited:
-                visited.add(v)
-                queue.append(v)
-
-    unvisited = []
-    for i in range(1, num_nodes):
-        if i not in visited:
-            unvisited.append(i)
-
-    if unvisited:
+        unreachable_nodes = set(range(num_nodes)) - base_component
         print(
-            f"FAIL: The graph is NOT connected. {len(unvisited)} nodes are unreachable from base."
+            f"FAIL: The graph is NOT connected. {len(unreachable_nodes)} nodes are unreachable from base."
         )
-        print(f"Unreachable nodes indices: {unvisited}")
-        # Check if they are connected to each other (subtours)
-        subtours = []
-        unvisited_set = set(unvisited)
-        while unvisited_set:
-            start = next(iter(unvisited_set))
-            q = [start]
-            component = {start}
-            unvisited_set.remove(start)
-            while q:
-                u = q.pop(0)
-                for v in adj[u]:
-                    if v in unvisited_set:  # Only care about unvisited nodes
-                        unvisited_set.remove(v)
-                        component.add(v)
-                        q.append(v)
-            subtours.append(component)
-        print(f"Found {len(subtours)} isolated components.")
-        for idx, comp in enumerate(subtours):
+        print(f"Unreachable nodes indices: {list(unreachable_nodes)}")
+
+        # Analyze isolated components
+        isolated_components = [c for c in components if 0 not in c]
+        print(f"Found {len(isolated_components)} isolated components.")
+        for idx, comp in enumerate(isolated_components):
             print(f"Component {idx+1}: {len(comp)} nodes. Sample: {list(comp)[:5]}")
-            # Check min y in component
             min_y = min(all_points[n].y for n in comp)
             print(f"  Min Y in component: {min_y} (Threshold: {entry_threshold})")
-
     # Check degrees
-    degrees = {i: len(adj[i]) for i in range(num_nodes)}
+    degrees = dict(G.degree())
     leaf_nodes = [i for i, d in degrees.items() if d == 1 and i != 0]
     print(f"Nodes with degree 1 (dead ends): {len(leaf_nodes)}")
     if leaf_nodes:
@@ -98,9 +60,6 @@ def check_connectivity(csv_path, base_point, entry_threshold):
         print(
             "WARNING: 'Exactly Once' constraint is IMPOSSIBLE if there are dead ends (unless they are start/end of path, but here we have loops)."
         )
-
-    else:
-        print("SUCCESS: The graph is fully connected.")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 from typing import List, Tuple, Dict, Set
 import mip
+import networkx as nx
 from utils import Point3D, calc_time_between_points
+import time
 
 
 class DroneRoutingSolver:
@@ -27,22 +29,24 @@ class DroneRoutingSolver:
         self.speed_down = speed_down
         self.speed_horizontal = speed_horizontal
 
-        self.num_nodes = len(points)
+        self.num_nodes = len(self.points)
 
         # Precompute valid arcs and costs
         self.arcs: Set[Tuple[int, int]] = set()
         self.entry_points_idx: Set[int] = set()
         self.costs: Dict[Tuple[int, int], float] = {}
+        self.graph = nx.DiGraph()
         self._build_graph()
 
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
-        print("Building graph...")
+        print("Building graph with NetworkX (Directed)...")
 
+        self.graph.add_nodes_from(range(self.num_nodes))
+
+        # 1. Edges between target points
         for i in range(1, self.num_nodes):
-            for j in range(1, self.num_nodes):
-                if i == j:
-                    continue
+            for j in range(i + 1, self.num_nodes):
                 p_i = self.points[i]
                 p_j = self.points[j]
                 is_connected = False
@@ -57,41 +61,43 @@ class DroneRoutingSolver:
                         is_connected = True
 
                 if is_connected:
-                    cost = calc_time_between_points(
+                    # Calculate costs for both directions
+                    cost_ij = calc_time_between_points(
                         p_i, p_j, self.speed_horizontal, self.speed_up, self.speed_down
                     )
-                    self.arcs.add((i, j))
-                    self.costs[(i, j)] = cost
-        print(f"Total arcs between points: {len(self.arcs)}")
+                    cost_ji = calc_time_between_points(
+                        p_j, p_i, self.speed_horizontal, self.speed_up, self.speed_down
+                    )
+                    self.graph.add_edge(i, j, weight=cost_ij)
+                    self.graph.add_edge(j, i, weight=cost_ji)
 
-        # Define set of entry points
+        # 2. Identify entry points and add edges to base (node 0)
         for i in range(1, self.num_nodes):
             if self.points[i].y <= self.entry_threshold:
                 self.entry_points_idx.add(i)
-        print(f"Total entry points: {len(self.entry_points_idx)}")
+                p_0 = self.points[0]
+                p_i = self.points[i]
 
-        # Add arcs from base (0) to entry points and back
-        for j in self.entry_points_idx:
-            p_j = self.points[j]
-            cost_to = calc_time_between_points(
-                self.points[0],
-                p_j,
-                self.speed_horizontal,
-                self.speed_up,
-                self.speed_down,
-            )
-            cost_from = calc_time_between_points(
-                p_j,
-                self.points[0],
-                self.speed_horizontal,
-                self.speed_up,
-                self.speed_down,
-            )
-            self.arcs.add((0, j))
-            self.costs[(0, j)] = cost_to
-            self.arcs.add((j, 0))
-            self.costs[(j, 0)] = cost_from
-        print(f"Total arcs including base: {len(self.arcs)}")
+                cost_0i = calc_time_between_points(
+                    p_0, p_i, self.speed_horizontal, self.speed_up, self.speed_down
+                )
+                cost_i0 = calc_time_between_points(
+                    p_i, p_0, self.speed_horizontal, self.speed_up, self.speed_down
+                )
+
+                self.graph.add_edge(0, i, weight=cost_0i)
+                self.graph.add_edge(i, 0, weight=cost_i0)
+
+        print(
+            f"NetworkX Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges"
+        )
+
+        # 3. Populate arcs and costs for the MIP solver
+        for u, v, data in self.graph.edges(data=True):
+            self.arcs.add((u, v))
+            self.costs[(u, v)] = data["weight"]
+
+        print(f"Total directed arcs for MIP: {len(self.arcs)}")
 
     def get_graph(self):
         """
@@ -116,9 +122,6 @@ class DroneRoutingSolver:
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = 0.05  # Relaxed to 5% gap for performance
         model.threads = -1
-
-        # Global timeout tracking
-        import time
 
         start_time = time.time()
 
@@ -299,59 +302,28 @@ class DroneRoutingSolver:
 
     def _find_subtours(self, x):
         """
-        Finds connected components in the solution graph.
+        Finds connected components in the solution graph using NetworkX.
         Returns a list of sets, where each set is a component that DOES NOT contain the base (node 0).
         """
-        # Build adjacency list from active edges
-        adj = {i: [] for i in range(self.num_nodes)}
+        # Build a graph from active edges
+        G_sol = nx.Graph()
+        G_sol.add_nodes_from(range(self.num_nodes))
+
         for k in range(self.k_drones):
             for i, j in self.arcs:
                 if x[k, i, j].x >= 0.5:
-                    adj[i].append(j)
-                    # Note: We treat the graph as directed for traversal,
-                    # but for connectivity check we usually treat it as undirected
-                    # or check reachability from base.
-                    # Here, we check reachability from base.
+                    G_sol.add_edge(i, j)
 
-        visited = set()
-        queue = [0]
-        visited.add(0)
+        # Find connected components
+        components = list(nx.connected_components(G_sol))
 
-        while queue:
-            u = queue.pop(0)
-            for v in adj[u]:
-                if v not in visited:
-                    visited.add(v)
-                    queue.append(v)
+        # Filter out the component containing the base (node 0)
+        subtours = []
+        for comp in components:
+            if 0 not in comp:
+                subtours.append(comp)
 
-        # If all nodes visited, no subtours (disconnected from base)
-        unvisited = [i for i in range(self.num_nodes) if i not in visited]
-        if not unvisited:
-            return []
-
-        # Group unvisited nodes into components
-        components = []
-        unvisited_set = set(unvisited)
-
-        while unvisited_set:
-            start = next(iter(unvisited_set))
-            q = [start]
-            component = {start}
-            unvisited_set.remove(start)
-
-            while q:
-                u = q.pop(0)
-                # Check neighbors in both directions for "weak" connectivity within component
-                # Or just forward? If we have a cycle A->B->A disconnected from base,
-                # forward search finds it.
-                for v in adj[u]:
-                    if v in unvisited_set:
-                        unvisited_set.remove(v)
-                        component.add(v)
-                        q.append(v)
-            components.append(component)
-
-        return components
+        return subtours
 
     def _extract_solution(self, x):
         paths = []
