@@ -35,7 +35,7 @@ $$ \min Z $$
 ### 1. Visit Every Point Exactly Once. The same drone can revisit the point.
 
 Each point $j \in P$ must be visited by exactly one drone.
-$$ \sum_{k \in K} \sum_{i \in V, (i,j) \in A} x{ijk} >= 1 \quad \forall j \in P $$
+$$ \sum_{k \in K} \sum_{i \in V, (i,j) \in A} x_{ijk} >= 1 \quad \forall j \in P $$
 
 ### 2. Flow Conservation
 
@@ -48,17 +48,21 @@ Each drone $k$ must leave the base $S$ exactly once and return to the base $S$ e
 $$ \sum_{j \in E_{ntry}} x_{Sjk} = 1 \quad \forall k \in K $$
 $$ \sum_{i \in E_{ntry}} x_{iSk} = 1 \quad \forall k \in K $$
 
-### 4. Minimax Time Constraint
+### 4. Symmetry Breaking
+
+To avoid symmetric solutions where drones are swapped, we order the drones based on the index of the first node they visit.
+$$ \sum_{j \in E_{ntry}} j \cdot x_{Sjk} \le \sum_{j \in E_{ntry}} j \cdot x_{S,j,k+1} \quad \forall k \in \{1, \dots, K-1\} $$
+
+### 5. Minimax Time Constraint
 
 The variable $Z$ must be greater than or equal to the total travel time of each drone $k$.
-$$ \sum_{(i,j) \in A} t_{ij} x_{ijk} \le Z \quad \forall k \in K $$
+$$ \sum_{(i,j) \in A} t_{ij} x\_{ijk} \le Z \quad \forall k \in K $$
 
-### 5. Subtour Elimination
+### 6. Subtour Elimination
 
 Iterative approach - currently under development
 
-
 ## Variable Domains
 
-$$ x_{ijk} \in \{0, 1\} \quad \forall (i,j) \in A, \forall k \in K $$
+$$ x\_{ijk} \in \{0, 1\} \quad \forall (i,j) \in A, \forall k \in K $$
 $$ Z \ge 0 $$
