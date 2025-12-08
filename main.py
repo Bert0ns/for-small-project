@@ -39,10 +39,15 @@ if __name__ == "__main__":
     if "1" in name or "edificio1" in name or "building1" in name:
         ENTRY_THRESHOLD = -12.5
         base_point = BASE_POINT_B1
+        solution_plot_name = (
+            "visualizations/after_solution/Building1_visualization_solution.html"
+        )
     else:
         ENTRY_THRESHOLD = -20.0
         base_point = BASE_POINT_B2
-
+        solution_plot_name = (
+            "visualizations/after_solution/Building2_visualization_solution.html"
+        )
     print(f"Initial point chosen: {base_point}")
 
     from solver import DroneRoutingSolver
@@ -64,14 +69,6 @@ if __name__ == "__main__":
         f"Graph has {len(points)} points and {len(arcs)} arcs. number of costs: {len(costs)}"
     )
 
-    htmpl_plot_generator(
-        points,
-        arcs,
-        entry_points_idx,
-        str(csv_path.name) + "Before solution",
-        output_file="visualizations/graph_visualization_before_solution.html",
-    )
-
     print("Solving routing problem...")
     paths = solver.solve(max_seconds=300000)
 
@@ -82,7 +79,7 @@ if __name__ == "__main__":
             arcs,
             entry_points_idx,
             str(csv_path.name) + " - Solution",
-            output_file="visualizations/graph_visualization_solution.html",
+            output_file=solution_plot_name,
             paths=paths,
         )
     else:
