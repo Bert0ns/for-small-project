@@ -94,9 +94,11 @@ class DroneRoutingSolver:
         )
 
         # 3. Populate arcs and costs for the MIP solver
+        self.out_edges = {i: [] for i in range(self.num_nodes)}
         for u, v, data in self.graph.edges(data=True):
             self.arcs.add((u, v))
             self.costs[(u, v)] = data["weight"]
+            self.out_edges[u].append(v)
 
         print(f"Total directed arcs for MIP: {len(self.arcs)}")
 
@@ -266,7 +268,6 @@ class DroneRoutingSolver:
             print(f"Found {len(subtours)} subtours. Adding constraints...")
 
             # Add cut-set constraints for each subtour
-            # Limit the number of cuts added per iteration to avoid bloating the model too fast
             # We prioritize smaller subtours as they are tighter cuts
             subtours.sort(key=len)
 
@@ -277,8 +278,9 @@ class DroneRoutingSolver:
                 cut_edges = []
                 for k in range(self.k_drones):
                     for i in component:
-                        for j in range(self.num_nodes):
-                            if j not in component and (i, j) in self.arcs:
+                        # Optimized loop using adjacency list
+                        for j in self.out_edges[i]:
+                            if j not in component:
                                 cut_edges.append(x[k, i, j])
 
                 if cut_edges:
@@ -288,10 +290,7 @@ class DroneRoutingSolver:
                     )
                     cuts_added += 1
 
-                # Safety break if too many cuts (optional, but helps performance)
-                if cuts_added > 50:
-                    print(f"Added 50 cuts (out of {len(subtours)}). Re-optimizing...")
-                    break
+            print(f"Added {cuts_added} cuts. Re-optimizing...")
 
             if cuts_added == 0:
                 print(

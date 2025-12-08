@@ -55,8 +55,19 @@ def check_connectivity(csv_path, base_point, entry_threshold):
     degrees = dict(G.degree())
     leaf_nodes = [i for i, d in degrees.items() if d == 1 and i != 0]
     print(f"Nodes with degree 1 (dead ends): {len(leaf_nodes)}")
-    if leaf_nodes:
+    
+    deg2_nodes = [i for i, d in degrees.items() if d == 2 and i != 0]
+    print(f"Nodes with degree 2 (potential dead ends in directed graph): {len(deg2_nodes)}")
+    
+    deg3_nodes = [i for i, d in degrees.items() if d == 3 and i != 0]
+    print(f"Nodes with degree 3: {len(deg3_nodes)}")
+    
+    deg4_nodes = [i for i, d in degrees.items() if d == 4 and i != 0]
+    print(f"Nodes with degree 4: {len(deg4_nodes)}")
+    
+    if leaf_nodes or deg2_nodes:
         print(f"Sample dead ends: {leaf_nodes[:10]}")
+        print(f"Sample degree 2 nodes: {deg2_nodes[:10]}")
         print(
             "WARNING: 'Exactly Once' constraint is IMPOSSIBLE if there are dead ends (unless they are start/end of path, but here we have loops)."
         )
