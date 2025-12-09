@@ -154,5 +154,5 @@ def calc_time_between_points(
 
     # Calculate and return the time for movement diagonal in space
     return calc_time_for_movement(
-        speed_lateral, speed_vertical, length_horizontal, diff_z
+        speed_lateral, speed_vertical, length_horizontal, abs(diff_z)
     )
