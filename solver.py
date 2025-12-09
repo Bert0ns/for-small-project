@@ -150,7 +150,7 @@ class DroneRoutingSolver:
 
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = 0.05  # Relaxed to 5% gap for performance
-        model.threads = 1  # Use single thread for stability
+        model.threads = -1  # Use all available threads for performance
         model.verbose = self.verbose
 
         # Sets
@@ -164,13 +164,11 @@ class DroneRoutingSolver:
             in_edges[v].append(u)
 
         # Variables
-        # x[k, i, j]: number of times drone k flies arc (i, j)
+        # x[k, i, j]: 1 if drone k flies arc (i, j), 0 otherwise
         x = {}
         for k in K:
             for i, j in self.arcs:
-                x[(k, i, j)] = model.add_var(
-                    var_type=mip.INTEGER, lb=0.0, name=f"x_{k}_{i}_{j}"
-                )
+                x[(k, i, j)] = model.add_var(var_type=mip.BINARY, name=f"x_{k}_{i}_{j}")
 
         # y[k, j]: 1 if grid node j is owned by drone k
         y = {}
@@ -204,28 +202,20 @@ class DroneRoutingSolver:
         for j in P:
             model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
 
-        # 2. Visit at least once if owned, and flow balance
-        M = self.num_nodes
+        # 2. Visit exactly once if owned
         for k in K:
             for j in P:
-                # Incoming >= Owned
+                # Incoming == Owned
                 model.add_constr(
-                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) >= y[(k, j)],
+                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) == y[(k, j)],
                     name=f"visit_in_{k}_{j}",
                 )
 
-                # Incoming <= M * Owned (Prevent visiting if not owned)
-                model.add_constr(
-                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) <= M * y[(k, j)],
-                    name=f"visit_in_max_{k}_{j}",
-                )
-
-                # Flow balance: Incoming == Outgoing
+                # Outgoing == Owned
                 outgoing = self.out_edges[j]
                 model.add_constr(
-                    mip.xsum(x[(k, i, j)] for i in in_edges[j])
-                    == mip.xsum(x[(k, j, i)] for i in outgoing),
-                    name=f"flow_balance_{k}_{j}",
+                    mip.xsum(x[(k, j, i)] for i in outgoing) == y[(k, j)],
+                    name=f"visit_out_{k}_{j}",
                 )
 
         # 3. Base Station Constraints
