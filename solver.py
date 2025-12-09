@@ -284,6 +284,10 @@ class DroneRoutingSolver:
                 name=f"symmetry_size_{k}",
             )
 
+        # Additional symmetry: enforce activation ordering z_k >= z_{k+1}
+        for k in range(self.k_drones - 1):
+            model.add_constr(z[k] >= z[k + 1], name=f"symmetry_active_{k}")
+
         # Activation linking: a drone must be active to own nodes
         big_m_nodes = float(len(P))
         for k in K:

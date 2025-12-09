@@ -103,12 +103,18 @@ $$
 T \ge \sum_{(i,j)\in A} t_{ij} x_{ij}^k \quad \forall k \in K
 $$
 
-### 6. Symmetry Breaking (Optional but Recommended)
+### 6. Symmetry Breaking
 
 Since all drones are identical, we can impose an ordering to reduce the search space. For example, we can enforce that the number of nodes visited by drone $k$ is greater than or equal to drone $k+1$.
 
 $$
 \sum_{j \in P} y_j^k \ge \sum_{j \in P} y_j^{k+1} \quad \forall k \in \{1, \dots, K-1\}
+$$
+
+We also order activations to avoid permutations of identical active drones:
+
+$$
+z_k \ge z_{k+1} \quad \forall k \in \{1, \dots, K-1\}
 $$
 
 ### 7. Activation Linking
