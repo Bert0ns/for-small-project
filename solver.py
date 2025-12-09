@@ -150,7 +150,7 @@ class DroneRoutingSolver:
 
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = 0.05  # Relaxed to 5% gap for performance
-        model.threads = -1
+        model.threads = 1  # Use single thread for stability
         model.verbose = self.verbose
 
         # Sets
@@ -207,7 +207,7 @@ class DroneRoutingSolver:
                     mip.xsum(x[(k, i, j)] for i in in_edges[j]) >= y[(k, j)],
                     name=f"visit_in_{k}_{j}",
                 )
-                
+
                 # Prevent visiting if not owned
                 model.add_constr(
                     mip.xsum(x[(k, i, j)] for i in in_edges[j]) <= M * y[(k, j)],
@@ -253,19 +253,13 @@ class DroneRoutingSolver:
                 name=f"makespan_{k}",
             )
 
-        
         # 6. Each drone must service at least one non-entry node (prevents “entry-only” tours)
         for k in K:
             model.add_constr(
-                mip.xsum(
-                    y[(k, j)]
-                    for j in P
-                    if j not in self.entry_points_idx
-                )
-                >= 1,
+                mip.xsum(y[(k, j)] for j in P if j not in self.entry_points_idx) >= 1,
                 name=f"non_entry_service_{k}",
             )
-        
+
         # 7. Base-connectedness via single-commodity flow
         for k in K:
             # Supply at base
