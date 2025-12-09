@@ -254,7 +254,7 @@ class DroneRoutingSolver:
 
         # --- Optimization Loop (Iterative Subtour Elimination) ---
         print("Starting optimization loop...")
-
+        
         iteration = 0
         while True:
             iteration += 1
