@@ -174,11 +174,13 @@ class DroneRoutingSolver:
             in_edges[v].append(u)
 
         # Variables
-        # x[k, i, j]: 1 if drone k flies arc (i, j), 0 otherwise
+        # x[k, i, j]: Number of times drone k flies arc (i, j)
         x = {}
         for k in K:
             for i, j in self.arcs:
-                x[(k, i, j)] = model.add_var(var_type=mip.BINARY, name=f"x_{k}_{i}_{j}")
+                x[(k, i, j)] = model.add_var(
+                    var_type=mip.INTEGER, lb=0.0, name=f"x_{k}_{i}_{j}"
+                )
 
         # y[k, j]: 1 if grid node j is owned by drone k
         y = {}
@@ -209,20 +211,29 @@ class DroneRoutingSolver:
         for j in P:
             model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
 
-        # 2. Visit exactly once if owned
+        # 2. Tour Connectivity & Ownership (Revisits Allowed)
+        M_visits = len(P)  # Sufficiently large number
         for k in K:
             for j in P:
-                # Incoming == Owned
+                outgoing = self.out_edges[j]
+
+                # Flow Balance: Incoming == Outgoing
                 model.add_constr(
-                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) == y[(k, j)],
-                    name=f"visit_in_{k}_{j}",
+                    mip.xsum(x[(k, i, j)] for i in in_edges[j])
+                    == mip.xsum(x[(k, j, m)] for m in outgoing),
+                    name=f"flow_balance_{k}_{j}",
                 )
 
-                # Outgoing == Owned
-                outgoing = self.out_edges[j]
+                # Service Requirement: If owned, must enter at least once
                 model.add_constr(
-                    mip.xsum(x[(k, j, i)] for i in outgoing) == y[(k, j)],
-                    name=f"visit_out_{k}_{j}",
+                    y[(k, j)] <= mip.xsum(x[(k, i, j)] for i in in_edges[j]),
+                    name=f"service_min_{k}_{j}",
+                )
+
+                # Exclusivity: If not owned, cannot enter
+                model.add_constr(
+                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) <= M_visits * y[(k, j)],
+                    name=f"service_max_{k}_{j}",
                 )
 
         # 3. Base Station Constraints
