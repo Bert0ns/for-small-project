@@ -217,6 +217,13 @@ class DroneRoutingSolver:
             edges_count[k][(v, u)] = edges_count[k].get((v, u), 0) + 1
             edges_count[k][(u, v)] = edges_count[k].get((u, v), 0) + 1
 
+        if unvisited:
+            if self.verbose:
+                print(
+                    f"Greedy heuristic failed to visit {len(unvisited)} nodes. Skipping warm start."
+                )
+            return None
+
         # Sort drones by number of owned nodes (descending) to satisfy symmetry breaking
         # We need to sort the keys of owned_nodes and edges_count together
 
@@ -330,7 +337,7 @@ class DroneRoutingSolver:
             model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
 
         # 2. Tour Connectivity & Ownership (Revisits Allowed)
-        M_visits = len(P)  # Sufficiently large number
+        M_visits = 2 * len(P)  # Sufficiently large number (increased for safety)
         for k in K:
             for j in P:
                 outgoing = self.out_edges[j]
@@ -432,29 +439,31 @@ class DroneRoutingSolver:
         # Warm Start
         if warm_start:
             try:
-                x_sol, y_sol, z_sol = self._generate_greedy_solution()
-                start_list = []
+                greedy_result = self._generate_greedy_solution()
+                if greedy_result:
+                    x_sol, y_sol, z_sol = greedy_result
+                    start_list = []
 
-                # Add x variables
-                for (k, u, v), val in x_sol.items():
-                    if (k, u, v) in x:
-                        start_list.append((x[(k, u, v)], val))
+                    # Add x variables
+                    for (k, u, v), val in x_sol.items():
+                        if (k, u, v) in x:
+                            start_list.append((x[(k, u, v)], val))
 
-                # Add y variables
-                for (k, j), val in y_sol.items():
-                    if (k, j) in y:
-                        start_list.append((y[(k, j)], val))
+                    # Add y variables
+                    for (k, j), val in y_sol.items():
+                        if (k, j) in y:
+                            start_list.append((y[(k, j)], val))
 
-                # Add z variables
-                for k, val in z_sol.items():
-                    if k in z:
-                        start_list.append((z[k], val))
+                    # Add z variables
+                    for k, val in z_sol.items():
+                        if k in z:
+                            start_list.append((z[k], val))
 
-                model.start = start_list
-                if self.verbose:
-                    print(
-                        f"Warm start solution provided with {len(start_list)} variables."
-                    )
+                    model.start = start_list
+                    if self.verbose:
+                        print(
+                            f"Warm start solution provided with {len(start_list)} variables."
+                        )
             except Exception as e:
                 if self.verbose:
                     print(f"Failed to generate warm start solution: {e}")
