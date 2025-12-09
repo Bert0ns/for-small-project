@@ -1,40 +1,84 @@
 """
-Drone Routing Optimization for Building Analysis
+Drone Routing Optimization (Strict Physical Constraints + Revisits Allowed)
 
-This module solves a vehicle routing problem (VRP) where k drones must visit a set of
-measurement points on a building, minimizing the makespan (maximum drone time).
+Constraints from Mathematical Model v6 respected:
+1. PHYSICAL CONNECTIVITY: Dist <= 4 OR (Dist <= 11 & Coords align).
+2. BASE ACCESS: Only via Entry Points.
+3. MINIMAX OBJECTIVE: Balances travel time.
 
-Problem constraints:
-- All drones start and end at a base point
-- Drones can only enter/exit the grid through designated entry points
-- Points are connected based on distance and coordinate difference rules
-- Each point must be visited exactly once
-- Different speeds apply for upward, downward, and horizontal movement
-
-Solution approach:
-- Greedy constructive heuristic with load balancing
-- Graph connectivity based on problem-specific distance rules
-- BFS pathfinding to ensure all reachable points are visited
+CHANGE:
+- REVISITS ALLOWED: Drones can traverse previously visited nodes to reach
+  unvisited areas or to return to base.
 """
 
-from typing import Final, List, Dict, Tuple
+from typing import Final, List, Dict, Set, Tuple, Optional
 import sys
 from pathlib import Path
-import mip
-import numpy as np
-from utils import Point3D, read_points_from_csv, calc_time_between_points, are_points_connected
+import heapq  # For Dijkstra priority queue
+import math
+from utils import Point3D, read_points_from_csv, calc_time_between_points
 
-
-# Number of drones
+# --- Constants ---
 K = 4
-# Speed constants (meters per second)
 SPEED_UP = 1.0
 SPEED_DOWN = 2.0
 SPEED_HORIZONTAL = 1.5
-# Initial points for each building
 INITIAL_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
 INITIAL_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
 
+def is_connected_strict(p1: Point3D, p2: Point3D) -> bool:
+    """
+    Validates connection strictly according to Mathematical Model v6.
+    """
+    dist = p1.distance_to(p2)
+    
+    if dist <= 4.0:
+        return True
+        
+    if dist <= 11.0:
+        dx = abs(p1.x - p2.x)
+        dy = abs(p1.y - p2.y)
+        dz = abs(p1.z - p2.z)
+        close_coords = (1 if dx <= 0.5 else 0) + \
+                       (1 if dy <= 0.5 else 0) + \
+                       (1 if dz <= 0.5 else 0)
+        if close_coords >= 2:
+            return True
+            
+    return False
+
+def find_path_to_nearest_target(
+    start_node: int, 
+    targets: Set[int], 
+    adj: Dict[int, List[int]], 
+    cost_matrix: Dict[Tuple[int, int], float]
+) -> Tuple[Optional[List[int]], float]:
+    """
+    Uses Dijkstra's algorithm to find the shortest time path from start_node
+    to the NEAREST node present in the 'targets' set.
+    Allows traversing any node in the graph (revisits).
+    """
+    # Priority Queue: (accumulated_time, current_node, path_list)
+    pq = [(0.0, start_node, [start_node])]
+    visited_in_search = set()
+    
+    while pq:
+        time_so_far, current, path = heapq.heappop(pq)
+        
+        # If we hit a target (that isn't the start node itself, unless required), return
+        if current in targets and current != start_node:
+            return path[1:], time_so_far  # Return path excluding start, and total time
+            
+        if current in visited_in_search:
+            continue
+        visited_in_search.add(current)
+        
+        for neighbor in adj[current]:
+            if neighbor not in visited_in_search:
+                edge_cost = cost_matrix[(current, neighbor)]
+                heapq.heappush(pq, (time_so_far + edge_cost, neighbor, path + [neighbor]))
+                
+    return None, 0.0
 
 def solve_drone_routing(
     points: List[Point3D],
@@ -45,228 +89,137 @@ def solve_drone_routing(
     speed_up: float,
     speed_down: float,
 ) -> Dict[int, List[int]]:
-    """
-    Solve the drone routing optimization problem using a greedy constructive heuristic.
     
-    For large instances (>100 points), this uses a practical greedy approach that ensures
-    all reachable points are visited.
-    
-    Args:
-        points: List of points to visit (grid points)
-        base_point: Starting/ending point for all drones
-        entry_points: Points that can be directly accessed from base
-        num_drones: Number of available drones (k)
-        speed_horizontal: Horizontal movement speed
-        speed_up: Upward movement speed
-        speed_down: Downward movement speed
-    
-    Returns:
-        Dictionary mapping drone_id to route (list of point indices, starting and ending with 0)
-    """
     n = len(points)
-    
-    # Build list of all nodes: index 0 = base, indices 1..n = grid points
     all_nodes = [base_point] + points
     
-    # Determine which grid points are entry points (indices in all_nodes)
-    # Entry points are the only grid points accessible directly from the base
+    # Identify Entry Points
     entry_indices = set()
     for i, p in enumerate(points):
         if p in entry_points:
-            entry_indices.add(i + 1)  # +1 because index 0 is base
-    
-    if len(entry_indices) == 0:
-        print("ERROR: No entry points found! Check the threshold values.")
+            entry_indices.add(i + 1)
+            
+    if not entry_indices:
+        print("ERROR: No entry points found.")
         return None
+
+    print(f"Building Connectivity Graph ({n} nodes)...")
     
-    print(f"\nBuilding connectivity graph for {n} points...")
-    print(f"Entry points: {len(entry_indices)}")
+    # Adjacency & Cost Matrix
+    adj = {i: [] for i in range(n + 1)}
+    cost_matrix = {}
     
-    # Build adjacency lists and travel time matrix
-    # Using dictionaries for efficient sparse graph representation
-    neighbors = {}
-    travel_time = {}
-    
-    # Base point (index 0) can connect to any entry point and vice versa
-    # This is a special case - normal connectivity rules don't apply
-    neighbors[0] = list(entry_indices)
-    for entry_idx in entry_indices:
-        time_to_entry = calc_time_between_points(
-            all_nodes[0], all_nodes[entry_idx],
-            speed_horizontal, speed_up, speed_down
-        )
-        travel_time[(0, entry_idx)] = time_to_entry
-        travel_time[(entry_idx, 0)] = time_to_entry
-        
-        if entry_idx not in neighbors:
-            neighbors[entry_idx] = []
-        neighbors[entry_idx].append(0)
-    
-    # Grid points connect to each other based on problem-specific connectivity rules
-    # Optimization: only check points within maximum connection distance (11m) 
-    # to avoid O(n²) comparisons for all pairs
-    print("Building grid connectivity (this may take a while for large instances)...")
-    MAX_DIST = 11.0  # Maximum connection distance from problem statement
-    
-    # Initialize neighbor lists for all grid points
+    # 1. Base Connections
+    adj[0] = list(entry_indices)
+    for idx in entry_indices:
+        t_out = calc_time_between_points(all_nodes[0], all_nodes[idx], speed_horizontal, speed_up, speed_down)
+        t_in = calc_time_between_points(all_nodes[idx], all_nodes[0], speed_horizontal, speed_up, speed_down)
+        cost_matrix[(0, idx)] = t_out
+        cost_matrix[(idx, 0)] = t_in
+        # Base is connected to entry, entry is connected to base
+        adj[idx].append(0)
+
+    # 2. Grid Connections (O(N^2) check)
     for i in range(1, n + 1):
-        if i not in neighbors:
-            neighbors[i] = []
-    
-    # Build undirected edges between connected grid points
-    progress_interval = max(1000, n // 10)  # Report every 10% or 1000 points
-    for i in range(1, n + 1):
-        if i % progress_interval == 0:
-            print(f"  Processing point {i}/{n}... ({100*i//n}%)")
-        
-        for j in range(i + 1, n + 1):  # Only check j > i to avoid duplicates
-            # Quick Euclidean distance check before expensive connectivity check
-            dist = all_nodes[i].distance_to(all_nodes[j])
-            if dist <= MAX_DIST and are_points_connected(all_nodes[i], all_nodes[j]):
-                # Add bidirectional edge
-                neighbors[i].append(j)
-                neighbors[j].append(i)
-                # Calculate and store travel time in both directions
-                travel_ij = calc_time_between_points(
-                    all_nodes[i], all_nodes[j],
-                    speed_horizontal, speed_up, speed_down
-                )
-                travel_time[(i, j)] = travel_ij
-                travel_time[(j, i)] = travel_ij
-    
-    print(f"Graph built successfully.")
-    
-    # Find all points reachable from entry points using breadth-first search (BFS)
-    # Some points may be unreachable if the graph is disconnected
-    reachable = set(entry_indices)
-    reachable.add(0)  # Base is reachable
-    queue = list(entry_indices)
-    
-    while queue:
-        current = queue.pop(0)
-        for neighbor in neighbors.get(current, []):
-            if neighbor not in reachable and neighbor != 0:
-                reachable.add(neighbor)
-                queue.append(neighbor)
-    
-    unreachable_count = n + 1 - len(reachable)
-    if unreachable_count > 0:
-        print(f"Warning: {unreachable_count} points are not reachable from entry points")
-    
-    print(f"Using greedy constructive heuristic for {len(reachable)-1} reachable points with {num_drones} drones...")
-    
-    # Greedy heuristic with load balancing:
-    # Phase 1: Start each drone at a different entry point
-    # Phase 2: Each drone builds its route using nearest neighbor until reaching target size
-    # Phase 3: Remaining points are assigned to drone with minimum time (balances makespan)
-    
+        for j in range(i + 1, n + 1):
+            if is_connected_strict(all_nodes[i], all_nodes[j]):
+                adj[i].append(j)
+                adj[j].append(i)
+                
+                t_ij = calc_time_between_points(all_nodes[i], all_nodes[j], speed_horizontal, speed_up, speed_down)
+                t_ji = calc_time_between_points(all_nodes[j], all_nodes[i], speed_horizontal, speed_up, speed_down)
+                cost_matrix[(i, j)] = t_ij
+                cost_matrix[(j, i)] = t_ji
+
+    print("Graph built. Starting Solver with Revisits Allowed...")
+
+    # --- STATE ---
+    unvisited = set(range(1, n + 1))
     routes = {k: [0] for k in range(1, num_drones + 1)}
-    route_times = {k: 0.0 for k in range(1, num_drones + 1)}
-    unvisited = reachable - {0}  # All reachable grid points
+    drone_times = {k: 0.0 for k in range(1, num_drones + 1)}
     
-    # Phase 1: Start each drone at a different entry point
-    entry_list = list(entry_indices)
-    for k in range(1, min(num_drones + 1, len(entry_list) + 1)):
-        if k - 1 < len(entry_list):
-            entry = entry_list[k - 1]
-            routes[k].append(entry)
-            route_times[k] = travel_time[(0, entry)]
-            unvisited.discard(entry)
-    
-    # Phase 2: Each drone builds a route using nearest neighbor
-    # Target: distribute points roughly equally among drones
-    target_points_per_drone = len(unvisited) // num_drones
-    
-    for k in range(1, num_drones + 1):
-        if len(routes[k]) == 1:  # Only has base, didn't get an entry point
-            continue
-            
-        current = routes[k][-1]
-        points_for_this_drone = 0
-        
-        # Build route using nearest neighbor heuristic
-        while points_for_this_drone < target_points_per_drone and unvisited:
-            nearest = None
-            nearest_time = float('inf')
-            
-            # Find nearest unvisited neighbor from current position
-            for candidate in unvisited:
-                if candidate in neighbors.get(current, []):
-                    t = travel_time.get((current, candidate), float('inf'))
-                    if t < nearest_time:
-                        nearest_time = t
-                        nearest = candidate
-            
-            if nearest is None:
-                # No direct neighbors available, stop for this drone
-                break
-            
-            # Add point to route and update time
-            routes[k].append(nearest)
-            route_times[k] += nearest_time
-            unvisited.discard(nearest)
-            current = nearest
-            points_for_this_drone += 1
-    
-    # Phase 3: Assign remaining points to balance makespan
-    # Pick the drone with minimum current time and find nearest unvisited point
+    # --- MAIN LOOP ---
     while unvisited:
-        # Select drone with minimum time to balance the makespan
-        min_drone = min(range(1, num_drones + 1), key=lambda k: route_times[k])
-        current = routes[min_drone][-1]
+        # 1. Pick drone with minimum time (Minimax heuristic)
+        current_drone = min(routes.keys(), key=lambda k: drone_times[k])
+        current_node = routes[current_drone][-1]
         
-        # Use BFS to find nearest unvisited point from this drone's current position
-        queue = [(current, 0, [current])]
-        visited_bfs = {current}
-        found = False
+        # 2. Try simple Greedy step first (Is there a direct unvisited neighbor?)
+        # This saves computation time avoiding Dijkstra if not needed.
+        best_neighbor = None
+        min_dist_time = float('inf')
         
-        while queue and not found:
-            node, time_so_far, path = queue.pop(0)
+        direct_neighbors = adj[current_node]
+        for neighbor in direct_neighbors:
+            if neighbor in unvisited:
+                t = cost_matrix[(current_node, neighbor)]
+                if t < min_dist_time:
+                    min_dist_time = t
+                    best_neighbor = neighbor
+        
+        if best_neighbor is not None:
+            # DIRECT HIT
+            routes[current_drone].append(best_neighbor)
+            drone_times[current_drone] += min_dist_time
+            unvisited.remove(best_neighbor)
             
-            if node in unvisited:
-                # Found an unvisited point - add the path to the drone's route
-                for point in path[1:]:  # Skip first point (already in route)
-                    if point in unvisited:
-                        routes[min_drone].append(point)
-                        prev = routes[min_drone][-2]
-                        route_times[min_drone] += travel_time.get((prev, point), 0)
-                        unvisited.discard(point)
-                found = True
-                break
+        else:
+            # 3. TRANSIT MODE (Revisits)
+            # No direct unvisited neighbors. Find the nearest unvisited node anywhere in the graph.
+            # We use Dijkstra to find the path through visited nodes.
+            path_segment, added_time = find_path_to_nearest_target(
+                current_node, unvisited, adj, cost_matrix
+            )
             
-            # Expand BFS frontier
-            for neighbor in neighbors.get(node, []):
-                if neighbor not in visited_bfs:
-                    visited_bfs.add(neighbor)
-                    travel_t = travel_time.get((node, neighbor), 0)
-                    queue.append((neighbor, time_so_far + travel_t, path + [neighbor]))
-        
-        if not found:
-            # No path found to any remaining points (disconnected graph)
-            break
+            if path_segment:
+                # Append the whole path (which may include revisited nodes)
+                routes[current_drone].extend(path_segment)
+                drone_times[current_drone] += added_time
+                # The last node in the path is the target (unvisited)
+                target_node = path_segment[-1]
+                if target_node in unvisited:
+                    unvisited.remove(target_node)
+            else:
+                # Graph disconnected or finished for this drone
+                # Temporarily make this drone time infinite so we pick others
+                # unless all are stuck
+                if all(drone_times[d] == float('inf') for d in routes):
+                    print("All drones stuck/disconnected.")
+                    break
+                drone_times[current_drone] = float('inf')
+
+    # --- RETURN TO BASE ---
+    print("All reachable nodes visited. Returning to base...")
     
-    if unvisited:
-        print(f"Warning: {len(unvisited)} points remain unreachable")
-    
-    # Close all routes: return to base
     for k in routes:
-        if routes[k][-1] != 0:
-            last_pos = routes[k][-1]
-            return_time = travel_time.get((last_pos, 0), 0)
-            routes[k].append(0)
-            route_times[k] += return_time
+        # Reset infinite times if any
+        if drone_times[k] == float('inf'):
+             # Recalculate real time
+             drone_times[k] = sum(cost_matrix.get((u,v), 0) for u,v in zip(routes[k], routes[k][1:]))
+
+        current_node = routes[k][-1]
+        if current_node != 0:
+            # Use Dijkstra to find path back to Base (0)
+            # Target is set containing just {0}
+            path_segment, added_time = find_path_to_nearest_target(
+                current_node, {0}, adj, cost_matrix
+            )
+            
+            if path_segment:
+                routes[k].extend(path_segment)
+                drone_times[k] += added_time
+            else:
+                print(f"Drone {k} CANNOT return to base from {current_node}!")
+
+    # --- STATS ---
+    print("\n=== Solution (Revisits Allowed) ===")
+    max_time = max(drone_times.values())
+    visited_total = n - len(unvisited)
     
-    # Print solution statistics
-    print(f"\nSolution found!")
-    max_time = max(route_times.values())
-    print(f"Makespan (max drone time): {max_time:.2f} seconds")
-    total_visited = sum(len(routes[k])-2 for k in routes)  # -2 for start and end base
-    print(f"Total points visited: {total_visited} / {n}")
-    for k in routes:
-        print(f"  Drone {k}: {len(routes[k])-2} points, time={route_times[k]:.2f}s")
+    print(f"Makespan: {max_time:.2f} s")
+    print(f"Coverage: {visited_total}/{n} points")
     
     return routes
-
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
@@ -274,54 +227,36 @@ if __name__ == "__main__":
         sys.exit(1)
 
     csv_path = Path(sys.argv[1])
-    if not csv_path.exists() or not csv_path.is_file():
-        print(f"Error: file not found: {csv_path}", file=sys.stderr)
-        sys.exit(1)
-
     try:
         points = read_points_from_csv(str(csv_path))
     except Exception as e:
-        print(f"Error reading points from '{csv_path}': {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Loaded {len(points)} points from {csv_path}")
-
-    # Check if there are duplicates while preserving input order
+    # Dedup logic
     seen = set()
     deduped = []
     for p in points:
         key = (p.x, p.y, p.z)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(p)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(p)
+    points = deduped
 
-    if len(deduped) != len(points):
-        print(
-            "WARNING: Duplicate points found in the input data. Keeping first occurrence of each."
-        )
-        points = deduped
-        print(f"Total unique points after removing duplicates: {len(points)}")
-    else:
-        print(f"Loaded {len(points)} points from {csv_path}")
-
-    # Heuristic to pick building thresholds based on filename
+    # Config
     name = csv_path.name.lower()
-    if "1" in name or "edificio1" in name or "building1" in name:
+    if "1" in name or "edificio1" in name:
         ENTRY_THRESHOLD = -12.5
-        initial_points = INITIAL_POINT_B1
+        base = INITIAL_POINT_B1
     else:
         ENTRY_THRESHOLD = -20.0
-        initial_points = INITIAL_POINT_B2
+        base = INITIAL_POINT_B2
 
     entry_points = [p for p in points if p.y <= ENTRY_THRESHOLD]
-    print(f"Initial point chosen: {initial_points}")
-    print(f"Entry points (y <= {ENTRY_THRESHOLD}): {len(entry_points)}")
 
-    # Solve the drone routing problem
     solution = solve_drone_routing(
         points=points,
-        base_point=initial_points,
+        base_point=base,
         entry_points=entry_points,
         num_drones=K,
         speed_horizontal=SPEED_HORIZONTAL,
@@ -329,12 +264,7 @@ if __name__ == "__main__":
         speed_down=SPEED_DOWN,
     )
 
-    # Print solution in required format
     if solution:
-        print("\n=== Solution ===")
-        for drone_id, route in solution.items():
-            route_str = "-".join(str(idx) for idx in route)
-            print(f"Drone {drone_id}: {route_str}")
-    else:
-        print("No solution found!")
-        sys.exit(1)
+        for k, route in solution.items():
+            route_str = "-".join(map(str, route))
+            print(f"Drone {k} ({len(route)} steps): {route_str}")
