@@ -286,6 +286,25 @@ if __name__ == "__main__":
 
     print(f"Loaded {len(points)} points from {csv_path}")
 
+    # Check if there are duplicates while preserving input order
+    seen = set()
+    deduped = []
+    for p in points:
+        key = (p.x, p.y, p.z)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+
+    if len(deduped) != len(points):
+        print(
+            "WARNING: Duplicate points found in the input data. Keeping first occurrence of each."
+        )
+        points = deduped
+        print(f"Total unique points after removing duplicates: {len(points)}")
+    else:
+        print(f"Loaded {len(points)} points from {csv_path}")
+
     # Heuristic to pick building thresholds based on filename
     name = csv_path.name.lower()
     if "1" in name or "edificio1" in name or "building1" in name:
@@ -298,7 +317,7 @@ if __name__ == "__main__":
     entry_points = [p for p in points if p.y <= ENTRY_THRESHOLD]
     print(f"Initial point chosen: {initial_points}")
     print(f"Entry points (y <= {ENTRY_THRESHOLD}): {len(entry_points)}")
-    
+
     # Solve the drone routing problem
     solution = solve_drone_routing(
         points=points,
@@ -309,7 +328,7 @@ if __name__ == "__main__":
         speed_up=SPEED_UP,
         speed_down=SPEED_DOWN,
     )
-    
+
     # Print solution in required format
     if solution:
         print("\n=== Solution ===")
