@@ -3,7 +3,6 @@ import mip
 import networkx as nx
 import numpy as np
 from utils import Point3D, calc_time_between_points
-import time
 
 
 class DroneRoutingSolver:
@@ -154,235 +153,188 @@ class DroneRoutingSolver:
         model.threads = -1
         model.verbose = self.verbose
 
-        start_time = time.time()
+        # Sets
+        K = range(self.k_drones)
+        V = range(self.num_nodes)
+        P = [i for i in V if i != 0]  # Target points
 
-        # --- Decision Variables ---
+        # Precompute in-edges for faster constraint building
+        in_edges = {i: [] for i in V}
+        for u, v in self.arcs:
+            in_edges[v].append(u)
 
-        # x[k, i, j] = 1 if drone k travels from i to j
+        # Variables
+        # x[k, i, j]: number of times drone k flies arc (i, j)
         x = {}
-        for k in range(self.k_drones):
+        for k in K:
             for i, j in self.arcs:
-                x[k, i, j] = model.add_var(var_type=mip.BINARY, name=f"x_{k}_{i}_{j}")
-        print(f"Variables x_ijk created: {len(x)}")
+                x[(k, i, j)] = model.add_var(
+                    var_type=mip.INTEGER, lb=0.0, name=f"x_{k}_{i}_{j}"
+                )
 
-        # Z = Max time (makespan)
-        Z = model.add_var(var_type=mip.CONTINUOUS, name="Z", lb=0.0)
-        print("Variable Z created.")
+        # y[k, j]: 1 if grid node j is owned by drone k
+        y = {}
+        for k in K:
+            for j in P:
+                y[(k, j)] = model.add_var(var_type=mip.BINARY, name=f"y_{k}_{j}")
 
-        # Obj. function
-        model.objective = mip.minimize(Z)
+        # T: makespan
+        T = model.add_var(var_type=mip.CONTINUOUS, lb=0.0, name="T")
 
-        # --- Constraints ---
+        # f[k, i, j]: flow variables for connectivity
+        f = {}
+        for k in K:
+            for i, j in self.arcs:
+                f[(k, i, j)] = model.add_var(
+                    var_type=mip.CONTINUOUS, lb=0.0, name=f"f_{k}_{i}_{j}"
+                )
 
-        # 1. Visit Each Point At Least Once (Relaxed to allow revisits)
-        # We use "At Least Once" because the graph contains dead ends,
-        # which require entering and leaving via the same edge (revisit).
-        for j in range(1, self.num_nodes):
-            model += (
+        # Objective
+        model.objective = T
+
+        # Constraints
+
+        # 1. Exclusive assignment
+        for j in P:
+            model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
+
+        # 2. Visit at least once
+        for k in K:
+            for j in P:
+                # Incoming
+                model.add_constr(
+                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) >= y[(k, j)],
+                    name=f"visit_in_{k}_{j}",
+                )
+
+                # Outgoing
+                outgoing = self.out_edges[j]
+                model.add_constr(
+                    mip.xsum(x[(k, j, i)] for i in outgoing) >= y[(k, j)],
+                    name=f"visit_out_{k}_{j}",
+                )
+
+        # 3. Flow conservation
+        for k in K:
+            for v in P:
+                outgoing = self.out_edges[v]
+                model.add_constr(
+                    mip.xsum(x[(k, i, v)] for i in in_edges[v])
+                    == mip.xsum(x[(k, v, j)] for j in outgoing),
+                    name=f"flow_{k}_{v}",
+                )
+
+        # 4. Mandatory use of all drones - single out-and-back
+        for k in K:
+            # Depart from base exactly once
+            base_outgoing = self.out_edges[0]
+            model.add_constr(
+                mip.xsum(x[(k, 0, j)] for j in base_outgoing) == 1, name=f"base_out_{k}"
+            )
+
+            # Return to base exactly once
+            base_incoming = in_edges[0]
+            model.add_constr(
+                mip.xsum(x[(k, i, 0)] for i in base_incoming) == 1, name=f"base_in_{k}"
+            )
+
+        # 5. Makespan linking
+        for k in K:
+            model.add_constr(
+                T
+                >= mip.xsum(self.costs[(i, j)] * x[(k, i, j)] for (i, j) in self.arcs),
+                name=f"makespan_{k}",
+            )
+
+        
+        # 6. Each drone must service at least one non-entry node (prevents “entry-only” tours)
+        for k in K:
+            model.add_constr(
                 mip.xsum(
-                    x[k, i, j]
-                    for k in range(self.k_drones)
-                    for i in range(self.num_nodes)
-                    if (i, j) in self.arcs
+                    y[(k, j)]
+                    for j in P
+                    if j not in self.entry_points_idx
                 )
                 >= 1,
-                f"visit_{j}",
+                name=f"non_entry_service_{k}",
             )
-        print("Visit at least once constraints added.")
-
-        # 2. Flow Conservation
-        # Constraint: sum(incoming) = sum(outgoing) for each drone k and point j
-        for k in range(self.k_drones):
-            for j in range(self.num_nodes):
-                incoming = [
-                    x[k, i, j] for i in range(self.num_nodes) if (i, j) in self.arcs
-                ]
-                outgoing = [
-                    x[k, j, l] for l in range(self.num_nodes) if (j, l) in self.arcs
-                ]
-                model += mip.xsum(incoming) == mip.xsum(outgoing), f"flow_{k}_{j}"
-        print("Flow conservation constraints added.")
-
-        # 3. Depot Constraints
-        # Each drone leaves base exactly once and returns exactly once
-        # Base is node 0
-        for k in range(self.k_drones):
-            depart_vars = [
-                x[k, 0, j]
-                for j in range(1, self.num_nodes)
-                if (0, j) in self.arcs and j in self.entry_points_idx
-            ]
-            return_vars = [
-                x[k, j, 0]
-                for j in range(1, self.num_nodes)
-                if (j, 0) in self.arcs and j in self.entry_points_idx
-            ]
-            model += mip.xsum(depart_vars) == 1, f"depart_{k}"
-            model += mip.xsum(return_vars) == 1, f"return_{k}"
-        print("Depot constraints added.")
-
-        # 4. Symmetry Breaking
-        # Order drones by the index of their first visited node.
-        # This reduces the search space for identical drones.
-        first_node_indices = []
-        for k in range(self.k_drones):
-            # The index of the first node visited by drone k is sum(j * x[k, 0, j])
-            # since exactly one x[k, 0, j] is 1.
-            expr = mip.xsum(
-                j * x[k, 0, j]
-                for j in range(1, self.num_nodes)
-                if (0, j) in self.arcs and j in self.entry_points_idx
-            )
-            first_node_indices.append(expr)
-
-        for k in range(self.k_drones - 1):
-            model += first_node_indices[k] <= first_node_indices[k + 1], f"symmetry_{k}"
-        print("Symmetry breaking constraints added.")
-
-        # 5. Minimax Time Constraint
-        for k in range(self.k_drones):
-            travel_time = mip.xsum(
-                self.costs[i, j] * x[k, i, j] for (i, j) in self.arcs
-            )
-            model += travel_time <= Z, f"makespan_{k}"
-        print("Minimax time constraints added.")
-
-        # 6. Subtour Elimination (Iterative / Lazy)
-        # We will handle subtour elimination iteratively in the solve loop.
-        # This avoids the heavy MTZ constraints and allows for revisits.
-        print("Subtour elimination will be handled iteratively.")
-
-        # --- Optimization Loop (Iterative Subtour Elimination) ---
-        print("Starting optimization loop...")
         
-        iteration = 0
-        while True:
-            iteration += 1
+        # 7. Base-connectedness via single-commodity flow
+        for k in K:
+            # Supply at base
+            base_outgoing = self.out_edges[0]
+            model.add_constr(
+                mip.xsum(f[(k, 0, j)] for j in base_outgoing)
+                == mip.xsum(y[(k, p)] for p in P),
+                name=f"flow_supply_{k}",
+            )
 
-            # Check remaining time
-            elapsed = time.time() - start_time
-            remaining = max_seconds - elapsed
-            if remaining <= 0:
-                print("Global time limit reached.")
-                break
-
-            model.max_seconds = remaining
-            print(f"--- Iteration {iteration} (Time left: {remaining:.1f}s) ---")
-
-            status = model.optimize()
-            print(f"Optimization status: {status}")
-
-            if status not in [
-                mip.OptimizationStatus.OPTIMAL,
-                mip.OptimizationStatus.FEASIBLE,
-            ]:
-                print("No solution found.")
-                return None
-
-            # Check for subtours
-            subtours = self._find_subtours(x)
-            if not subtours:
-                print("No subtours found. Solution is valid.")
-                print(
-                    f"Objective value (Max Time): {model.objective_value:.4f} seconds"
+            # Flow conservation on owned nodes
+            for v in P:
+                outgoing = self.out_edges[v]
+                model.add_constr(
+                    mip.xsum(f[(k, i, v)] for i in in_edges[v])
+                    == y[(k, v)] + mip.xsum(f[(k, v, j)] for j in outgoing),
+                    name=f"flow_conservation_{k}_{v}",
                 )
-                return self._extract_solution(x)
 
-            print(f"Found {len(subtours)} subtours. Adding constraints...")
-
-            # Add cut-set constraints for each subtour
-            # We prioritize smaller subtours as they are tighter cuts
-            subtours.sort(key=len)
-
-            cuts_added = 0
-            for component in subtours:
-                # Constraint: sum(x_ij) for i in S, j not in S >= 1
-                # We sum over all drones
-                cut_edges = []
-                for k in range(self.k_drones):
-                    for i in component:
-                        # Optimized loop using adjacency list
-                        for j in self.out_edges[i]:
-                            if j not in component:
-                                cut_edges.append(x[k, i, j])
-
-                if cut_edges:
-                    model += (
-                        mip.xsum(cut_edges) >= 1,
-                        f"subtour_cut_{iteration}_{list(component)[0]}",
-                    )
-                    cuts_added += 1
-
-            print(f"Added {cuts_added} cuts. Re-optimizing...")
-
-            if cuts_added == 0:
-                print(
-                    "Warning: Subtours found but no valid cuts could be generated (no outgoing edges?)."
-                )
-                break
-
-        print("Loop finished without valid solution.")
-        return None
-
-    def _find_subtours(self, x):
-        """
-        Finds connected components in the solution graph using NetworkX.
-        Returns a list of sets, where each set is a component that DOES NOT contain the base (node 0).
-        """
-        # Build a graph from active edges
-        G_sol = nx.Graph()
-        G_sol.add_nodes_from(range(self.num_nodes))
-
-        for k in range(self.k_drones):
+            # Capacity linking
             for i, j in self.arcs:
-                if x[k, i, j].x >= 0.5:
-                    G_sol.add_edge(i, j)
+                model.add_constr(
+                    f[(k, i, j)] <= len(P) * x[(k, i, j)],
+                    name=f"flow_capacity_{k}_{i}_{j}",
+                )
 
-        # Find connected components
-        components = list(nx.connected_components(G_sol))
+        # Solve
+        status = model.optimize(max_seconds=max_seconds)
 
-        # Filter out the component containing the base (node 0)
-        subtours = []
-        for comp in components:
-            if 0 not in comp:
-                subtours.append(comp)
-
-        return subtours
+        if (
+            status == mip.OptimizationStatus.OPTIMAL
+            or status == mip.OptimizationStatus.FEASIBLE
+        ):
+            print(f"Solution found! Objective: {model.objective_value}")
+            return self._extract_solution(x)
+        else:
+            print("No solution found.")
+            return []
 
     def _extract_solution(self, x):
         paths = []
         for k in range(self.k_drones):
-            path = [0]
-            current_node = 0
-            steps = 0
-            max_steps = self.num_nodes * 2  # Safety limit
+            # Build multigraph adjacency list for this drone
+            adj = {}
+            for (d, u, v), var in x.items():
+                if d == k and var.x is not None and var.x > 0.5:
+                    count = int(round(var.x))
+                    if u not in adj:
+                        adj[u] = []
+                    for _ in range(count):
+                        adj[u].append(v)
 
-            while steps < max_steps:
-                next_node = None
-                # Find the next node in the path
-                # We look for j such that x[k, current_node, j] == 1
-                for j in range(self.num_nodes):
-                    if (k, current_node, j) in x and x[k, current_node, j].x >= 0.99:
-                        next_node = j
-                        break
+            if 0 not in adj or not adj[0]:
+                # Drone didn't move? (Should not happen with constraints)
+                paths.append([0])
+                print(f"Drone {k+1}: 0")
+                continue
 
-                if next_node is None:
-                    break
+            # Hierholzer's algorithm for Eulerian path/circuit
+            # Since we start at 0 and must return to 0, it's a circuit.
+            stack = [0]
+            circuit = []
 
-                path.append(next_node)
-                current_node = next_node
-                steps += 1
+            while stack:
+                u = stack[-1]
+                if u in adj and adj[u]:
+                    v = adj[u].pop()
+                    stack.append(v)
+                else:
+                    circuit.append(stack.pop())
 
-                if current_node == 0:
-                    break
+            # The circuit is built in reverse order of finishing
+            path = circuit[::-1]
 
-            if steps >= max_steps:
-                print(
-                    f"Warning: Drone {k+1} path extraction hit safety limit. Possible cycle."
-                )
-
-            # Format the path as a string "0-node1-node2-...-0"
             path_str = "-".join(map(str, path))
             print(f"Drone {k+1}: {path_str}")
             paths.append(path)
+
         return paths

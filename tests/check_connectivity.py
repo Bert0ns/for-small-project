@@ -12,7 +12,26 @@ from solver import DroneRoutingSolver
 def check_connectivity(csv_path, base_point, entry_threshold):
     print(f"Checking connectivity for {csv_path}...")
     points = read_points_from_csv(str(csv_path))
-
+    
+    # Check if tere are duplicate points
+    unique_points = set((p.x, p.y, p.z) for p in points)
+    if len(unique_points) != len(points):
+        print("WARNING: Duplicate points found in the input data.")
+        # Print duplicate indexes
+        point_count = {}
+        for idx, p in enumerate(points):
+            key = (p.x, p.y, p.z)
+            if key not in point_count:
+                point_count[key] = []
+            point_count[key].append(idx)
+        for key, idxs in point_count.items():
+            if len(idxs) > 1:
+                print(f"  Point {key} at indexes {idxs}")
+                
+    print("Removing duplicates...")
+    points = list(unique_points)
+    points = [Point3D(x, y, z) for x, y, z in points]
+    print(f"Total unique points: {len(points)}")
     # Initialize solver to build the graph
     # We don't care about speeds or k_drones for connectivity check
     solver = DroneRoutingSolver(
@@ -77,6 +96,6 @@ if __name__ == "__main__":
     BASE_POINT_B1 = Point3D(0.0, -16.0, 0.0)
     BASE_POINT_B2 = Point3D(0.0, -40.0, 0.0)
 
-    check_connectivity("data/Building1.csv", BASE_POINT_B1, -12.5)
+    check_connectivity("data/Edificio1.csv", BASE_POINT_B1, -12.5)
     print("-" * 20)
-    check_connectivity("data/Building2.csv", BASE_POINT_B2, -20.0)
+    check_connectivity("data/Edificio2.csv", BASE_POINT_B2, -20.0)

@@ -31,8 +31,16 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error reading points from '{csv_path}': {e}", file=sys.stderr)
         sys.exit(1)
-
-    print(f"Loaded {len(points)} points from {csv_path}")
+        
+    # Check if there are duplicates
+    unique_points = set((p.x, p.y, p.z) for p in points)
+    if len(unique_points) != len(points):
+        print("WARNING: Duplicate points found in the input data.")
+        points = list(unique_points)
+        points = [Point3D(x, y, z) for x, y, z in points]
+        print(f"Total unique points after removing duplicates: {len(points)}")
+    else:
+        print(f"Loaded {len(points)} points from {csv_path}")
 
     # Heuristic to pick building thresholds based on filename
     name = csv_path.name.lower()

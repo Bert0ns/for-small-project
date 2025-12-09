@@ -4,6 +4,14 @@
 
 We need to route $K=4$ drones to visit a set of points $P$ in 3D space, starting and ending at a base station $S$. The goal is to minimize the maximum time any single drone takes to complete its tour (Minimax objective).
 
+This model updates the assumptions to:
+- **All 4 drones must be used.**
+- A drone may **revisit nodes it has already visited**.
+- **No drone may visit a node that another drone visits** (exclusive ownership of each grid point).
+- **No multiple base touches**: each drone performs a single out-and-back trip (one departure from base, one return to base).
+- Objective: **minimize makespan** (latest return time to base).
+
+
 ## Sets and Indices
 
 - $V = P \cup \{S\}$: Set of all nodes, where $S$ is the base station (node 0) and $P = \{1, \dots, N\}$ is the set of target points.
@@ -15,54 +23,98 @@ We need to route $K=4$ drones to visit a set of points $P$ in 3D space, starting
 
 ## Parameters
 
-- $t_{ij}$: Travel time between node $i$ and node $j$.
-  - Calculated based on lateral and vertical speeds provided in the problem description.
-  - $t_{ij} = \infty$ if $(i, j) \notin A$.
+- Coordinates $(x_i,y_i,z_i)$ for all $i \in V$.
+- Lateral distance $a_{ij} = \sqrt{(x_i-x_j)^2 + (y_i-y_j)^2}$.
+- Vertical difference $\Delta z_{ij} = z_j - z_i$.
+- Travel time $t_{ij}$ (asymmetric):
+  - If $\Delta z_{ij} > 0$: $t_{ij} = \max\!\big(a_{ij}/1.5,\ \Delta z_{ij}/1\big)$.
+  - If $\Delta z_{ij} < 0$: $t_{ij} = \max\!\big(a_{ij}/1.5,\ |\Delta z_{ij}|/2\big)$.
+  - If $\Delta z_{ij} = 0$: $t_{ij} = a_{ij}/1.5$.
+- Big-$M$ for time linking (choose tight, e.g., upper bound on total route time).
+
 
 ## Decision Variables
 
-- $x_{ijk} \in \{0, 1\}$: Binary variable, equal to 1 if drone $k$ travels from node $i$ to node $j$, 0 otherwise.
-
-- $Z \in \mathbb{R}^{+}$: The maximum time taken by any drone (the variable to minimize).
+- $x_{ij}^k \in \mathbb{Z}_{\ge 0}$: number of times drone $k$ flies arc $(i,j)$.
+- $y_j^k \in \{0,1\}$: 1 if grid node $j$ is **owned/visited** by drone $k$.
+- $f_{ij}^k \ge 0$: flow from base $S$ to owned nodes for connectivity (single-commodity flow per drone).
+- $T \ge 0$: makespan (time of the slowest drone).
 
 ## Objective Function
 
 Minimize the makespan (time of the longest tour):
-$$ \min Z $$
+
+$$
+\min T
+$$
 
 ## Constraints
 
-### 1. Visit Every Point Exactly Once. The same drone can revisit the point.
+### 1. Exclusive assignment of grid points
+Each grid node is owned by exactly one drone:
 
-Each point $j \in P$ must be visited by exactly one drone.
-$$ \sum_{k \in K} \sum_{i \in V, (i,j) \in A} x_{ijk} >= 1 \quad \forall j \in P $$
+$$
+\sum_{k \in K} y_j^k = 1 \quad \forall j \in P
+$$
 
-### 2. Flow Conservation
+### 2. Visit-at-least-once by its owner
+If drone $k$ owns $j$, it must enter and leave $j$ at least once:
 
-If a drone $k$ enters a node $j$, it must leave it.
-$$ \sum_{i \in V, (i,j) \in A} x_{ijk} = \sum_{m \in V, (j,m) \in A} x_{jmk} \quad \forall j \in P, \forall k \in K $$
+$$
+\sum_{i : (i,j)\in A} x_{ij}^k \ge y_j^k, \quad
+\sum_{i : (j,i)\in A} x_{ji}^k \ge y_j^k \quad \forall j \in P,\ \forall k \in K
+$$
 
-### 3. Depot Constraints
+(Using integer $x$ allows revisits; these are lower bounds, not equalities.)
 
-Each drone $k$ must leave the base $S$ exactly once and return to the base $S$ exactly once.
-$$ \sum_{j \in E_{ntry}} x_{Sjk} = 1 \quad \forall k \in K $$
-$$ \sum_{i \in E_{ntry}} x_{iSk} = 1 \quad \forall k \in K $$
+### 3. Flow conservation on owned nodes
+For any drone $k$, net flow is zero at every owned node:
 
-### 4. Symmetry Breaking
+$$
+\sum_{i : (i,v)\in A} x_{iv}^k = \sum_{j : (v,j)\in A} x_{vj}^k \quad \forall v \in P,\ \forall k \in K
+$$
 
-To avoid symmetric solutions where drones are swapped, we order the drones based on the index of the first node they visit.
-$$ \sum_{j \in E_{ntry}} j \cdot x_{Sjk} \le \sum_{j \in E_{ntry}} j \cdot x_{S,j,k+1} \quad \forall k \in \{1, \dots, K-1\} $$
+### 4. Mandatory use of all drones — single out-and-back (no multiple base touches)
+Each drone must depart from the base exactly once and return exactly once:
 
-### 5. Minimax Time Constraint
+$$
+\sum_{j : (S,j)\in A} x_{Sj}^k = 1,\quad
+\sum_{i : (i,S)\in A} x_{iS}^k = 1 \quad \forall k \in K
+$$
 
-The variable $Z$ must be greater than or equal to the total travel time of each drone $k$.
-$$ \sum_{(i,j) \in A} t_{ij} x\_{ijk} \le Z \quad \forall k \in K $$
+No additional base visits are allowed; thus, $x_{Sj}^k$ and $x_{jS}^k$ outside these single uses must be zero.
 
-### 6. Subtour Elimination
+### 5. Makespan linking
+Total time per drone is the sum over its traversals:
 
-Iterative approach - currently under development
+$$
+T \ge \sum_{(i,j)\in A} t_{ij}\, x_{ij}^k \quad \forall k \in K
+$$
 
-## Variable Domains
+### 6. Each drone must service at least one non-entry node (prevents “entry-only” tours)
 
-$$ x\_{ijk} \in \{0, 1\} \quad \forall (i,j) \in A, \forall k \in K $$
-$$ Z \ge 0 $$
+$$
+\sum_{j \in P \setminus E_{ntry}} y_j^k \ge 1 \quad \forall k \in K
+$$
+
+### 7. Base-connectedness via single-commodity flow (preferred over MTZ here)
+Supply at base, proportional to owned nodes:
+
+$$
+\sum_{j : (S,j)\in A} f_{Sj}^k = \sum_{p \in P} y_p^k \quad \forall k \in K
+$$
+
+Flow conservation on owned nodes:
+
+$$
+\sum_{i : (i,v)\in A} f_{iv}^k = y_v^k + \sum_{j : (v,j)\in A} f_{vj}^k \quad \forall v \in P,\ \forall k \in K
+$$
+
+Capacity linking to traversals:
+
+$$
+f_{ij}^k \le |P| \cdot x_{ij}^k \quad \forall (i,j)\in A,\ \forall k \in K
+$$
+
+These three together ensure every owned node of drone $k$ is reachable from $S$ in $k$’s route and eliminate disconnected subtours while still allowing revisits.
+
