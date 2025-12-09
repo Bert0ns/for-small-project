@@ -11,6 +11,8 @@ K = 4
 SPEED_UP = 1.0
 SPEED_DOWN = 2.0
 SPEED_HORIZONTAL = 1.5
+SOLVER_TIME_LIMIT = 9000  # seconds
+SOLVER_MIP_GAP = 0.02  # relative gap for faster solves
 # Initial points for each building
 BASE_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
 BASE_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
@@ -32,12 +34,19 @@ if __name__ == "__main__":
         print(f"Error reading points from '{csv_path}': {e}", file=sys.stderr)
         sys.exit(1)
         
-    # Check if there are duplicates
-    unique_points = set((p.x, p.y, p.z) for p in points)
-    if len(unique_points) != len(points):
-        print("WARNING: Duplicate points found in the input data.")
-        points = list(unique_points)
-        points = [Point3D(x, y, z) for x, y, z in points]
+    # Check if there are duplicates while preserving input order
+    seen = set()
+    deduped = []
+    for p in points:
+        key = (p.x, p.y, p.z)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+
+    if len(deduped) != len(points):
+        print("WARNING: Duplicate points found in the input data. Keeping first occurrence of each.")
+        points = deduped
         print(f"Total unique points after removing duplicates: {len(points)}")
     else:
         print(f"Loaded {len(points)} points from {csv_path}")
@@ -86,7 +95,7 @@ if __name__ == "__main__":
     )
 
     print("Solving routing problem...")
-    paths = solver.solve(max_seconds=300000)
+    paths = solver.solve(max_seconds=SOLVER_TIME_LIMIT, mip_gap=SOLVER_MIP_GAP)
 
     if paths:
         print("Routing problem solved. Generating solution plot...")

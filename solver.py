@@ -41,7 +41,8 @@ class DroneRoutingSolver:
 
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
-        print("Building graph with NetworkX (Directed)...")
+        if self.verbose:
+            print("Building graph with NetworkX (Directed)...")
 
         self.graph.add_nodes_from(range(self.num_nodes))
 
@@ -72,7 +73,8 @@ class DroneRoutingSolver:
         # np.triu ensures i <= j, k=1 ensures i < j
         rows, cols = np.where(np.triu(is_connected, k=1))
 
-        print(f"Found {len(rows)} connected pairs.")
+        if self.verbose:
+            print(f"Found {len(rows)} connected pairs.")
 
         # Add edges
         for i, j in zip(rows, cols):
@@ -114,9 +116,10 @@ class DroneRoutingSolver:
             self.graph.add_edge(0, int(i), weight=cost_0i)
             self.graph.add_edge(int(i), 0, weight=cost_i0)
 
-        print(
-            f"NetworkX Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges"
-        )
+        if self.verbose:
+            print(
+                f"NetworkX Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges"
+            )
 
         # 3. Populate arcs and costs for the MIP solver
         self.out_edges = {i: [] for i in range(self.num_nodes)}
@@ -125,7 +128,13 @@ class DroneRoutingSolver:
             self.costs[(u, v)] = data["weight"]
             self.out_edges[u].append(v)
 
-        print(f"Total directed arcs for MIP: {len(self.arcs)}")
+        if not self.entry_points_idx:
+            raise ValueError(
+                "No entry points satisfy the threshold; base cannot connect to the grid."
+            )
+
+        if self.verbose:
+            print(f"Total directed arcs for MIP: {len(self.arcs)}")
 
     def get_graph(self):
         """
@@ -140,16 +149,17 @@ class DroneRoutingSolver:
         """
         return self.points, self.arcs, self.costs, self.entry_points_idx
 
-    def solve(self, max_seconds: int = 300):
+    def solve(self, max_seconds: int = 300, mip_gap: float = 0.02):
         """
         Builds and solves the MIP model for the Drone Routing Problem.
 
         Args:
             max_seconds (int): Maximum time allowed for the solver in seconds.
+            mip_gap (float): Relative MIP gap tolerance (trade optimality for speed).
         """
 
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
-        model.max_mip_gap = 0.05  # Relaxed to 5% gap for performance
+        model.max_mip_gap = mip_gap
         model.threads = -1  # Use all available threads for performance
         model.verbose = self.verbose
 
@@ -179,6 +189,9 @@ class DroneRoutingSolver:
         # T: makespan
         T = model.add_var(var_type=mip.CONTINUOUS, lb=0.0, name="T")
 
+        # z[k]: 1 if drone k is used
+        z = {k: model.add_var(var_type=mip.BINARY, name=f"z_{k}") for k in K}
+
         # f[k, i, j]: flow variables for connectivity
         f = {}
         for k in K:
@@ -188,8 +201,9 @@ class DroneRoutingSolver:
                 )
 
         # Objective
-        # Minimize makespan + small penalty on total travel time
-        epsilon = 0.001
+        # Minimize makespan + small penalty on total travel time (lexicographic)
+        max_cost = max(self.costs.values()) if self.costs else 1.0
+        epsilon = 1e-6 * max_cost
         model.objective = T + mip.xsum(
             (epsilon * self.costs[(i, j)]) * x[(k, i, j)]
             for k in K
@@ -223,13 +237,15 @@ class DroneRoutingSolver:
             # Depart from base exactly once
             base_outgoing = self.out_edges[0]
             model.add_constr(
-                mip.xsum(x[(k, 0, j)] for j in base_outgoing) == 1, name=f"base_out_{k}"
+                mip.xsum(x[(k, 0, j)] for j in base_outgoing) == z[k],
+                name=f"base_out_{k}",
             )
 
             # Return to base exactly once
             base_incoming = in_edges[0]
             model.add_constr(
-                mip.xsum(x[(k, i, 0)] for i in base_incoming) == 1, name=f"base_in_{k}"
+                mip.xsum(x[(k, i, 0)] for i in base_incoming) == z[k],
+                name=f"base_in_{k}",
             )
 
         # 4. Subtour Elimination (Single-Commodity Flow)
@@ -275,22 +291,37 @@ class DroneRoutingSolver:
                 name=f"symmetry_size_{k}",
             )
 
+        # Activation linking: a drone must be active to own nodes
+        big_m_nodes = len(P)
+        for k in K:
+            model.add_constr(
+                mip.xsum(y[(k, j)] for j in P) <= big_m_nodes * z[k],
+                name=f"activation_{k}",
+            )
+            model.add_constr(
+                mip.xsum(y[(k, j)] for j in P) >= z[k],
+                name=f"activation_lower_{k}",
+            )
+
         # Solve
-        status = model.optimize(max_seconds=float(max_seconds))
+        status = model.optimize(max_seconds=max_seconds)
 
         if (
             status == mip.OptimizationStatus.OPTIMAL
             or status == mip.OptimizationStatus.FEASIBLE
         ):
-            print(f"Solution found! Objective: {model.objective_value}")
-            return self._extract_solution(x)
+            if self.verbose:
+                print(f"Solution found! Objective: {model.objective_value}")
+            return self._extract_solution(x, z)
         else:
-            print("No solution found.")
+            if self.verbose:
+                print("No solution found.")
             return []
 
-    def _extract_solution(self, x):
+    def _extract_solution(self, x, z):
         paths = []
         for k in range(self.k_drones):
+            active = z[k].x is not None and z[k].x > 0.5
             # Build multigraph adjacency list for this drone
             adj = {}
             for (d, u, v), var in x.items():
@@ -302,9 +333,10 @@ class DroneRoutingSolver:
                         adj[u].append(v)
 
             if 0 not in adj or not adj[0]:
-                # Drone didn't move? (Should not happen with constraints)
-                paths.append([0])
-                print(f"Drone {k+1}: 0")
+                path = [0, 0]
+                if self.verbose:
+                    print(f"Drone {k+1}: {'-'.join(map(str, path))}")
+                paths.append(path)
                 continue
 
             # Hierholzer's algorithm for Eulerian path/circuit
@@ -323,8 +355,9 @@ class DroneRoutingSolver:
             # The circuit is built in reverse order of finishing
             path = circuit[::-1]
 
-            path_str = "-".join(map(str, path))
-            print(f"Drone {k+1}: {path_str}")
+            if self.verbose:
+                path_str = "-".join(map(str, path))
+                print(f"Drone {k+1}: {path_str}")
             paths.append(path)
 
         return paths
