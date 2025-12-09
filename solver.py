@@ -190,7 +190,13 @@ class DroneRoutingSolver:
                 )
 
         # Objective
-        model.objective = T
+        # Minimize makespan + small penalty on total travel time
+        epsilon = 0.001
+        model.objective = T + mip.xsum(
+            (epsilon * self.costs[(i, j)]) * x[(k, i, j)]
+            for k in K
+            for (i, j) in self.arcs
+        )
 
         # Constraints
 
@@ -198,40 +204,31 @@ class DroneRoutingSolver:
         for j in P:
             model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
 
-        # 2. Visit at least once
+        # 2. Visit at least once if owned, and flow balance
         M = self.num_nodes
         for k in K:
             for j in P:
-                # Incoming
+                # Incoming >= Owned
                 model.add_constr(
                     mip.xsum(x[(k, i, j)] for i in in_edges[j]) >= y[(k, j)],
                     name=f"visit_in_{k}_{j}",
                 )
 
-                # Prevent visiting if not owned
+                # Incoming <= M * Owned (Prevent visiting if not owned)
                 model.add_constr(
                     mip.xsum(x[(k, i, j)] for i in in_edges[j]) <= M * y[(k, j)],
                     name=f"visit_in_max_{k}_{j}",
                 )
 
-                # Outgoing
+                # Flow balance: Incoming == Outgoing
                 outgoing = self.out_edges[j]
                 model.add_constr(
-                    mip.xsum(x[(k, j, i)] for i in outgoing) >= y[(k, j)],
-                    name=f"visit_out_{k}_{j}",
+                    mip.xsum(x[(k, i, j)] for i in in_edges[j])
+                    == mip.xsum(x[(k, j, i)] for i in outgoing),
+                    name=f"flow_balance_{k}_{j}",
                 )
 
-        # 3. Flow conservation
-        for k in K:
-            for v in P:
-                outgoing = self.out_edges[v]
-                model.add_constr(
-                    mip.xsum(x[(k, i, v)] for i in in_edges[v])
-                    == mip.xsum(x[(k, v, j)] for j in outgoing),
-                    name=f"flow_{k}_{v}",
-                )
-
-        # 4. Mandatory use of all drones - single out-and-back
+        # 3. Base Station Constraints
         for k in K:
             # Depart from base exactly once
             base_outgoing = self.out_edges[0]
@@ -245,6 +242,33 @@ class DroneRoutingSolver:
                 mip.xsum(x[(k, i, 0)] for i in base_incoming) == 1, name=f"base_in_{k}"
             )
 
+        # 4. Subtour Elimination (Single-Commodity Flow)
+        for k in K:
+            # Supply at base = number of owned nodes
+            base_outgoing = self.out_edges[0]
+            model.add_constr(
+                mip.xsum(f[(k, 0, j)] for j in base_outgoing)
+                == mip.xsum(y[(k, p)] for p in P),
+                name=f"flow_supply_{k}",
+            )
+
+            # Flow conservation on owned nodes: In - Out = Owned
+            for v in P:
+                outgoing = self.out_edges[v]
+                model.add_constr(
+                    mip.xsum(f[(k, i, v)] for i in in_edges[v])
+                    - mip.xsum(f[(k, v, j)] for j in outgoing)
+                    == y[(k, v)],
+                    name=f"flow_conservation_{k}_{v}",
+                )
+
+            # Capacity linking
+            for i, j in self.arcs:
+                model.add_constr(
+                    f[(k, i, j)] <= (len(P) - 1) * x[(k, i, j)],
+                    name=f"flow_capacity_{k}_{i}_{j}",
+                )
+
         # 5. Makespan linking
         for k in K:
             model.add_constr(
@@ -253,41 +277,16 @@ class DroneRoutingSolver:
                 name=f"makespan_{k}",
             )
 
-        # 6. Each drone must service at least one non-entry node (prevents “entry-only” tours)
-        for k in K:
+        # 6. Symmetry Breaking
+        # Order drones by number of visited nodes: |P_k| >= |P_{k+1}|
+        for k in range(self.k_drones - 1):
             model.add_constr(
-                mip.xsum(y[(k, j)] for j in P if j not in self.entry_points_idx) >= 1,
-                name=f"non_entry_service_{k}",
+                mip.xsum(y[(k, j)] for j in P) >= mip.xsum(y[(k + 1, j)] for j in P),
+                name=f"symmetry_size_{k}",
             )
-
-        # 7. Base-connectedness via single-commodity flow
-        for k in K:
-            # Supply at base
-            base_outgoing = self.out_edges[0]
-            model.add_constr(
-                mip.xsum(f[(k, 0, j)] for j in base_outgoing)
-                == mip.xsum(y[(k, p)] for p in P),
-                name=f"flow_supply_{k}",
-            )
-
-            # Flow conservation on owned nodes
-            for v in P:
-                outgoing = self.out_edges[v]
-                model.add_constr(
-                    mip.xsum(f[(k, i, v)] for i in in_edges[v])
-                    == y[(k, v)] + mip.xsum(f[(k, v, j)] for j in outgoing),
-                    name=f"flow_conservation_{k}_{v}",
-                )
-
-            # Capacity linking
-            for i, j in self.arcs:
-                model.add_constr(
-                    f[(k, i, j)] <= len(P) * x[(k, i, j)],
-                    name=f"flow_capacity_{k}_{i}_{j}",
-                )
 
         # Solve
-        status = model.optimize(max_seconds=max_seconds)
+        status = model.optimize(max_seconds=float(max_seconds))
 
         if (
             status == mip.OptimizationStatus.OPTIMAL
