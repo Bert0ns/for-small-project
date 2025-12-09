@@ -199,12 +199,19 @@ class DroneRoutingSolver:
             model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
 
         # 2. Visit at least once
+        M = self.num_nodes
         for k in K:
             for j in P:
                 # Incoming
                 model.add_constr(
                     mip.xsum(x[(k, i, j)] for i in in_edges[j]) >= y[(k, j)],
                     name=f"visit_in_{k}_{j}",
+                )
+                
+                # Prevent visiting if not owned
+                model.add_constr(
+                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) <= M * y[(k, j)],
+                    name=f"visit_in_max_{k}_{j}",
                 )
 
                 # Outgoing
