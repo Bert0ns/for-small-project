@@ -200,15 +200,8 @@ class DroneRoutingSolver:
                     var_type=mip.CONTINUOUS, lb=0.0, name=f"f_{k}_{i}_{j}"
                 )
 
-        # Objective
-        # Minimize makespan + small penalty on total travel time (lexicographic)
-        max_cost = max(self.costs.values()) if self.costs else 1.0
-        epsilon = 1e-6 * max_cost
-        model.objective = T + mip.xsum(
-            (epsilon * self.costs[(i, j)]) * x[(k, i, j)]
-            for k in K
-            for (i, j) in self.arcs
-        )
+        # Objective: pure minimax (no secondary tie-breaker)
+        model.objective = T
 
         # Constraints
 
@@ -271,7 +264,7 @@ class DroneRoutingSolver:
             # Capacity linking
             for i, j in self.arcs:
                 model.add_constr(
-                    f[(k, i, j)] <= (len(P) - 1) * x[(k, i, j)],
+                    f[(k, i, j)] <= len(P) * x[(k, i, j)],
                     name=f"flow_capacity_{k}_{i}_{j}",
                 )
 
@@ -292,7 +285,7 @@ class DroneRoutingSolver:
             )
 
         # Activation linking: a drone must be active to own nodes
-        big_m_nodes = len(P)
+        big_m_nodes = float(len(P))
         for k in K:
             model.add_constr(
                 mip.xsum(y[(k, j)] for j in P) <= big_m_nodes * z[k],
@@ -304,7 +297,7 @@ class DroneRoutingSolver:
             )
 
         # Solve
-        status = model.optimize(max_seconds=max_seconds)
+        status = model.optimize(max_seconds=float(max_seconds))
 
         if (
             status == mip.OptimizationStatus.OPTIMAL
