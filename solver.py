@@ -136,6 +136,121 @@ class DroneRoutingSolver:
         if self.verbose:
             print(f"Total directed arcs for MIP: {len(self.arcs)}")
 
+    def _generate_greedy_solution(self):
+        """
+        Generates a feasible solution using a greedy tree-expansion heuristic.
+        Each drone builds a tree of visited nodes, traversing edges back and forth.
+        This guarantees connectivity and respects the strict ownership constraint (no visiting others' nodes).
+        """
+        if self.verbose:
+            print("Generating greedy initial solution...")
+
+        # Data structures
+        # owned_nodes[k] = set of nodes owned by drone k
+        owned_nodes = {k: {0} for k in range(self.k_drones)}
+
+        # edges_count[k][(u, v)] = count
+        edges_count = {k: {} for k in range(self.k_drones)}
+
+        # drone_times[k] = current total time
+        drone_times = {k: 0.0 for k in range(self.k_drones)}
+
+        unvisited = set(range(1, self.num_nodes))
+
+        # Precompute valid neighbors for fast lookup
+        # neighbors[u] = [(v, cost_uv, cost_vu), ...]
+        neighbors = {u: [] for u in range(self.num_nodes)}
+        for (u, v), cost in self.costs.items():
+            if (v, u) in self.costs:  # Ensure bidirectional for "there and back"
+                neighbors[u].append((v, cost, self.costs[(v, u)]))
+
+        while unvisited:
+            best_move = None
+            best_obj = float("inf")
+
+            # Find best node to add
+            candidate_found = False
+
+            current_max = max(drone_times.values())
+
+            for k in range(self.k_drones):
+                # Optimization: Iterate through owned nodes of all drones to find neighbors in unvisited
+                for v in owned_nodes[k]:
+                    # Constraint: Cannot branch from base (0) if already has a branch
+                    # This ensures degree of base is exactly 2 (1 out, 1 in)
+                    if v == 0 and len(owned_nodes[k]) > 1:
+                        continue
+
+                    for u, cost_vu, cost_uv in neighbors[v]:
+                        if u in unvisited:
+                            # Cost to add u: go v->u and u->v
+                            added_cost = cost_vu + cost_uv
+                            new_time = drone_times[k] + added_cost
+
+                            # Objective: minimize the new global makespan
+                            new_obj = max(new_time, current_max)
+
+                            # Tie-breaker: prefer smaller added_cost
+                            if new_obj < best_obj or (
+                                new_obj == best_obj
+                                and added_cost
+                                < (best_move[3] if best_move else float("inf"))
+                            ):
+                                best_obj = new_obj
+                                best_move = (k, v, u, added_cost)
+                                candidate_found = True
+
+            if not candidate_found:
+                if self.verbose:
+                    print(
+                        "Warning: Greedy heuristic got stuck. Graph might not be connected."
+                    )
+                break
+
+            # Apply best move
+            k, v, u, added_cost = best_move
+            owned_nodes[k].add(u)
+            unvisited.remove(u)
+            drone_times[k] += added_cost
+
+            # Add edges (v, u) and (u, v)
+            edges_count[k][(v, u)] = edges_count[k].get((v, u), 0) + 1
+            edges_count[k][(u, v)] = edges_count[k].get((u, v), 0) + 1
+
+        # Sort drones by number of owned nodes (descending) to satisfy symmetry breaking
+        # We need to sort the keys of owned_nodes and edges_count together
+
+        # Get list of (k, num_nodes)
+        drone_sizes = [(k, len(owned_nodes[k])) for k in range(self.k_drones)]
+        # Sort by size desc
+        drone_sizes.sort(key=lambda x: x[1], reverse=True)
+
+        # Create mapping: new_k -> old_k
+        new_to_old = {new_k: old_k for new_k, (old_k, _) in enumerate(drone_sizes)}
+
+        # Convert to solution format
+        x_sol = {}
+        y_sol = {}
+        z_sol = {}
+
+        for new_k in range(self.k_drones):
+            old_k = new_to_old[new_k]
+
+            # z
+            is_active = len(owned_nodes[old_k]) > 1  # Has more than just base
+            z_sol[new_k] = 1.0 if is_active else 0.0
+
+            # y
+            for node in owned_nodes[old_k]:
+                if node != 0:
+                    y_sol[(new_k, node)] = 1.0
+
+            # x
+            for (u, v), count in edges_count[old_k].items():
+                x_sol[(new_k, u, v)] = float(count)
+
+        return x_sol, y_sol, z_sol
+
     def get_graph(self):
         """
         Returns the graph representation: nodes, arcs, and costs.
@@ -149,13 +264,16 @@ class DroneRoutingSolver:
         """
         return self.points, self.arcs, self.costs, self.entry_points_idx
 
-    def solve(self, max_seconds: int = 300, mip_gap: float = 0.02):
+    def solve(
+        self, max_seconds: int = 300, mip_gap: float = 0.02, warm_start: bool = True
+    ):
         """
         Builds and solves the MIP model for the Drone Routing Problem.
 
         Args:
             max_seconds (int): Maximum time allowed for the solver in seconds.
             mip_gap (float): Relative MIP gap tolerance (trade optimality for speed).
+            warm_start (bool): Whether to generate and use a greedy initial solution.
         """
 
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
@@ -310,6 +428,36 @@ class DroneRoutingSolver:
                 mip.xsum(y[(k, j)] for j in P) >= z[k],
                 name=f"activation_lower_{k}",
             )
+
+        # Warm Start
+        if warm_start:
+            try:
+                x_sol, y_sol, z_sol = self._generate_greedy_solution()
+                start_list = []
+
+                # Add x variables
+                for (k, u, v), val in x_sol.items():
+                    if (k, u, v) in x:
+                        start_list.append((x[(k, u, v)], val))
+
+                # Add y variables
+                for (k, j), val in y_sol.items():
+                    if (k, j) in y:
+                        start_list.append((y[(k, j)], val))
+
+                # Add z variables
+                for k, val in z_sol.items():
+                    if k in z:
+                        start_list.append((z[k], val))
+
+                model.start = start_list
+                if self.verbose:
+                    print(
+                        f"Warm start solution provided with {len(start_list)} variables."
+                    )
+            except Exception as e:
+                if self.verbose:
+                    print(f"Failed to generate warm start solution: {e}")
 
         # Solve
         status = model.optimize(max_seconds=float(max_seconds))

@@ -12,7 +12,9 @@ SPEED_UP = 1.0
 SPEED_DOWN = 2.0
 SPEED_HORIZONTAL = 1.5
 SOLVER_TIME_LIMIT = 9000  # seconds
-SOLVER_MIP_GAP = 0.2  # relative gap for faster solves
+SOLVER_MIP_GAP = 0.0  # relative gap for faster solves
+WARM_START = True  # whether to use warm start or not
+
 # Initial points for each building
 BASE_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
 BASE_POINT_B2: Final[Point3D] = Point3D(0.0, -40.0, 0.0)
@@ -95,7 +97,7 @@ if __name__ == "__main__":
     )
 
     print("Solving routing problem...")
-    paths = solver.solve(max_seconds=SOLVER_TIME_LIMIT, mip_gap=SOLVER_MIP_GAP)
+    paths = solver.solve(max_seconds=SOLVER_TIME_LIMIT, mip_gap=SOLVER_MIP_GAP, warm_start=WARM_START)
 
     if paths:
         print("Routing problem solved. Generating solution plot...")
