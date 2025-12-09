@@ -337,7 +337,7 @@ class DroneRoutingSolver:
             model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
 
         # 2. Tour Connectivity & Ownership (Revisits Allowed)
-        M_visits = 2 * len(P)  # Sufficiently large number (increased for safety)
+        M_visits = len(P)  # Sufficiently large number (increased for safety)
         for k in K:
             for j in P:
                 outgoing = self.out_edges[j]
