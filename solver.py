@@ -401,7 +401,7 @@ class DroneRoutingSolver:
         model.max_mip_gap = mip_gap
         model.threads = -1
         model.verbose = self.verbose
-        model.cuts = 2  # Aggressive cut generation
+        model.cuts = -1  # Aggressive cut generation
         # model.presolve = -1  # Enable presolve
 
         # Sets
