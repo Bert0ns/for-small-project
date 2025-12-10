@@ -256,7 +256,10 @@ class DroneRoutingSolver:
             for (u, v), count in edges_count[old_k].items():
                 x_sol[(new_k, u, v)] = float(count)
 
-        return x_sol, y_sol, z_sol
+        # Calculate makespan of the greedy solution
+        greedy_makespan = max(drone_times.values())
+
+        return x_sol, y_sol, z_sol, greedy_makespan
 
     def get_graph(self):
         """
@@ -441,7 +444,7 @@ class DroneRoutingSolver:
             try:
                 greedy_result = self._generate_greedy_solution()
                 if greedy_result:
-                    x_sol, y_sol, z_sol = greedy_result
+                    x_sol, y_sol, z_sol, greedy_makespan = greedy_result
                     start_list = []
 
                     # Add x variables
@@ -460,13 +463,27 @@ class DroneRoutingSolver:
                             start_list.append((z[k], val))
 
                     model.start = start_list
+
+                    # Set Upper Bound from Greedy Solution
+                    # This significantly prunes the search tree
+                    T.ub = greedy_makespan
+
                     if self.verbose:
                         print(
-                            f"Warm start solution provided with {len(start_list)} variables."
+                            f"Warm start solution provided with {len(start_list)} variables. UB set to {greedy_makespan:.2f}"
                         )
             except Exception as e:
                 if self.verbose:
                     print(f"Failed to generate warm start solution: {e}")
+
+        # Solver Configuration for Speed
+        model.cuts = 2  # Aggressive cut generation
+        #model.presolve = -1  # Enable presolve
+
+        max_min_trip = self._get_makespan_lower_bound()
+        if self.verbose:
+            print(f"Setting lower bound for makespan T to {max_min_trip:.2f}")
+        T.lb = max_min_trip
 
         # Solve
         status = model.optimize(max_seconds=float(max_seconds))
@@ -482,6 +499,61 @@ class DroneRoutingSolver:
             if self.verbose:
                 print("No solution found.")
             return []
+
+    def _get_makespan_lower_bound(self) -> float:
+        """
+        Computes a lower bound for the makespan T based on shortest round trips.
+        T >= max(shortest_round_trip(0 -> j -> 0)) for all j
+        This helps the solver prune branches that can't possibly be optimal.
+        Since node 0 is only connected to entry points, this implicitly finds
+        the optimal entry and exit points for each node j.
+
+        Here is the step-by-step reasoning:
+
+        1. Definition of Makespan:
+            T is the time taken by the slowest drone. In other words,
+            T ≥ Time(Drone k) for all drones k
+        2. Mandatory Visit: Every node j in the grid must be visited by some drone.
+        3. Minimum Time for Node j: For a drone to visit node j, it must start at the base (0), get to j,
+            and eventually return to the base (0). The absolute minimum time this takes is the shortest path from Base → j plus the shortest path from j → Base.
+            MinTrip(j)=dist(0,j)+dist(j,0)
+        4. The Bottleneck: Since
+            T must be greater than the travel time of any drone, and some drone has to visit the "furthest" node (the one with the largest round-trip time), the makespan cannot be smaller than that largest round-trip time.
+
+        Example:
+            Node A takes at least 10 minutes to visit and return.
+            Node B takes at least 50 minutes to visit and return.
+            Node C takes at least 20 minutes to visit and return.
+            Even if we send one drone just to visit Node B and come back immediately (the most efficient possible route for B), that drone will take 50 minutes.
+            Since
+            T is the maximum of all drone times, T must be at least 50 minutes.
+
+        Therefore:
+            T ≥ max_j∈P_(MinTrip(j))
+
+        That is why we compute the minimum round-trip for every node and take the maximum of those values to set the lower bound.
+
+        Returns:
+            A float representing the lower bound for makespan T.
+        """
+        try:
+            dists_from_base = nx.shortest_path_length(
+                self.graph, source=0, weight="weight"
+            )
+            dists_to_base = nx.shortest_path_length(
+                self.graph.reverse(), source=0, weight="weight"
+            )
+
+            max_min_trip = 0.0
+            for j in range(1, self.num_nodes):
+                if j in dists_from_base and j in dists_to_base:
+                    trip = dists_from_base[j] + dists_to_base[j]
+                    max_min_trip = max(max_min_trip, trip)
+
+            return max_min_trip
+        except Exception:
+            print("An error occurred: Could not compute lower bound for makespan T.")
+            return 0.0
 
     def _extract_solution(self, x, z):
         paths = []
