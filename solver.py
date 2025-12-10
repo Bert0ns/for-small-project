@@ -261,6 +261,115 @@ class DroneRoutingSolver:
 
         return x_sol, y_sol, z_sol, greedy_makespan
 
+    def _generate_no_revisit_greedy_solution(self):
+        """
+        Generates a feasible solution where drones never revisit a node (simple cycles).
+        Uses a parallel nearest neighbor heuristic with minimax objective.
+        """
+        if self.verbose:
+            print("Generating no-revisit greedy initial solution...")
+
+        # Initialize
+        routes = {k: [0] for k in range(self.k_drones)}
+        drone_times = {k: 0.0 for k in range(self.k_drones)}
+        unvisited = set(range(1, self.num_nodes))
+
+        # Precompute neighbors for fast lookup (only outgoing edges needed)
+        # neighbors[u] = [(v, cost), ...]
+        neighbors = {u: [] for u in range(self.num_nodes)}
+        for (u, v), cost in self.costs.items():
+            neighbors[u].append((v, cost))
+
+        while unvisited:
+            best_move = None
+            best_new_makespan = float("inf")
+
+            current_max_time = max(drone_times.values())
+
+            candidate_found = False
+
+            for k in range(self.k_drones):
+                u = routes[k][-1]
+
+                # Check all reachable unvisited nodes
+                for v, cost in neighbors[u]:
+                    if v in unvisited:
+                        new_time = drone_times[k] + cost
+                        new_makespan = max(new_time, current_max_time)
+
+                        # Minimize makespan, then cost
+                        if new_makespan < best_new_makespan:
+                            best_new_makespan = new_makespan
+                            best_move = (k, v, cost)
+                            candidate_found = True
+                        elif new_makespan == best_new_makespan:
+                            if best_move and cost < best_move[2]:
+                                best_move = (k, v, cost)
+                                candidate_found = True
+
+            if not candidate_found:
+                if self.verbose:
+                    print("No-revisit heuristic stuck: cannot reach any unvisited node.")
+                return None
+
+            # Apply move
+            k, v, cost = best_move
+            routes[k].append(v)
+            drone_times[k] += cost
+            unvisited.remove(v)
+
+        # Return to base
+        for k in range(self.k_drones):
+            u = routes[k][-1]
+            if u != 0:
+                # Check if return to base is possible
+                if (u, 0) in self.costs:
+                    cost = self.costs[(u, 0)]
+                    routes[k].append(0)
+                    drone_times[k] += cost
+                else:
+                    if self.verbose:
+                        print(
+                            f"No-revisit heuristic failed: Drone {k} cannot return to base from {u}."
+                        )
+                    return None
+
+        # Sort drones by number of visited nodes (descending) for symmetry breaking
+        # Note: routes[k] includes 0 at start and end. Number of visited target nodes is len(routes[k]) - 2.
+        # Actually, just len(routes[k]) is fine for sorting since they all start/end at 0.
+
+        drone_sizes = [(k, len(routes[k])) for k in range(self.k_drones)]
+        drone_sizes.sort(key=lambda x: x[1], reverse=True)
+
+        new_to_old = {new_k: old_k for new_k, (old_k, _) in enumerate(drone_sizes)}
+
+        # Convert to solution format
+        x_sol = {}
+        y_sol = {}
+        z_sol = {}
+
+        for new_k in range(self.k_drones):
+            old_k = new_to_old[new_k]
+            route = routes[old_k]
+
+            # z: active if route has more than [0, 0]
+            is_active = len(route) > 2
+            z_sol[new_k] = 1.0 if is_active else 0.0
+
+            # y: all nodes in route except 0
+            for node in route:
+                if node != 0:
+                    y_sol[(new_k, node)] = 1.0
+
+            # x: edges in route
+            for i in range(len(route) - 1):
+                u, v = route[i], route[i + 1]
+                x_sol[(new_k, u, v)] = 1.0  # In no-revisit, count is always 1
+
+        greedy_makespan = max(drone_times.values())
+
+        return x_sol, y_sol, z_sol, greedy_makespan
+
     def get_graph(self):
         """
         Returns the graph representation: nodes, arcs, and costs.
@@ -288,8 +397,10 @@ class DroneRoutingSolver:
 
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = mip_gap
-        model.threads = -1  # Use all available threads for performance
+        model.threads = 1
         model.verbose = self.verbose
+        model.cuts = 2  # Aggressive cut generation
+        # model.presolve = -1  # Enable presolve
 
         # Sets
         K = range(self.k_drones)
@@ -442,7 +553,15 @@ class DroneRoutingSolver:
         # Warm Start
         if warm_start:
             try:
-                greedy_result = self._generate_greedy_solution()
+                # Try the no-revisit heuristic first (often better quality if feasible)
+                greedy_result = self._generate_no_revisit_greedy_solution()
+                
+                # If that fails, fall back to the tree-expansion heuristic (more robust)
+                if not greedy_result:
+                    if self.verbose:
+                        print("No-revisit heuristic failed. Falling back to tree-expansion heuristic.")
+                    greedy_result = self._generate_greedy_solution()
+
                 if greedy_result:
                     x_sol, y_sol, z_sol, greedy_makespan = greedy_result
                     start_list = []
@@ -475,10 +594,6 @@ class DroneRoutingSolver:
             except Exception as e:
                 if self.verbose:
                     print(f"Failed to generate warm start solution: {e}")
-
-        # Solver Configuration for Speed
-        model.cuts = 2  # Aggressive cut generation
-        #model.presolve = -1  # Enable presolve
 
         max_min_trip = self._get_makespan_lower_bound()
         if self.verbose:
