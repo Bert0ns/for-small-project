@@ -309,7 +309,9 @@ class DroneRoutingSolver:
 
             if not candidate_found:
                 if self.verbose:
-                    print("No-revisit heuristic stuck: cannot reach any unvisited node.")
+                    print(
+                        "No-revisit heuristic stuck: cannot reach any unvisited node."
+                    )
                 return None
 
             # Apply move
@@ -397,7 +399,7 @@ class DroneRoutingSolver:
 
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = mip_gap
-        model.threads = 1
+        model.threads = -1
         model.verbose = self.verbose
         model.cuts = 2  # Aggressive cut generation
         # model.presolve = -1  # Enable presolve
@@ -432,14 +434,6 @@ class DroneRoutingSolver:
 
         # z[k]: 1 if drone k is used
         z = {k: model.add_var(var_type=mip.BINARY, name=f"z_{k}") for k in K}
-
-        # f[k, i, j]: flow variables for connectivity
-        f = {}
-        for k in K:
-            for i, j in self.arcs:
-                f[(k, i, j)] = model.add_var(
-                    var_type=mip.CONTINUOUS, lb=0.0, name=f"f_{k}_{i}_{j}"
-                )
 
         # Objective: pure minimax (no secondary tie-breaker)
         model.objective = T
@@ -491,33 +485,6 @@ class DroneRoutingSolver:
                 name=f"base_in_{k}",
             )
 
-        # 4. Subtour Elimination (Single-Commodity Flow)
-        for k in K:
-            # Supply at base = number of owned nodes
-            base_outgoing = self.out_edges[0]
-            model.add_constr(
-                mip.xsum(f[(k, 0, j)] for j in base_outgoing)
-                == mip.xsum(y[(k, p)] for p in P),
-                name=f"flow_supply_{k}",
-            )
-
-            # Flow conservation on owned nodes: In - Out = Owned
-            for v in P:
-                outgoing = self.out_edges[v]
-                model.add_constr(
-                    mip.xsum(f[(k, i, v)] for i in in_edges[v])
-                    - mip.xsum(f[(k, v, j)] for j in outgoing)
-                    == y[(k, v)],
-                    name=f"flow_conservation_{k}_{v}",
-                )
-
-            # Capacity linking
-            for i, j in self.arcs:
-                model.add_constr(
-                    f[(k, i, j)] <= len(P) * x[(k, i, j)],
-                    name=f"flow_capacity_{k}_{i}_{j}",
-                )
-
         # 5. Makespan linking
         for k in K:
             model.add_constr(
@@ -551,15 +518,18 @@ class DroneRoutingSolver:
             )
 
         # Warm Start
+        start_list = []
         if warm_start:
             try:
                 # Try the no-revisit heuristic first (often better quality if feasible)
                 greedy_result = self._generate_no_revisit_greedy_solution()
-                
+
                 # If that fails, fall back to the tree-expansion heuristic (more robust)
                 if not greedy_result:
                     if self.verbose:
-                        print("No-revisit heuristic failed. Falling back to tree-expansion heuristic.")
+                        print(
+                            "No-revisit heuristic failed. Falling back to tree-expansion heuristic."
+                        )
                     greedy_result = self._generate_greedy_solution()
 
                 if greedy_result:
@@ -600,8 +570,125 @@ class DroneRoutingSolver:
             print(f"Setting lower bound for makespan T to {max_min_trip:.2f}")
         T.lb = max_min_trip
 
-        # Solve
-        status = model.optimize(max_seconds=float(max_seconds))
+        # 4. Subtour Elimination (Iterative)
+
+        # Solve (Iterative Subtour Elimination)
+        import time
+
+        start_time = time.time()
+        time_limit = float(max_seconds)
+        status = mip.OptimizationStatus.ERROR
+
+        iteration = 0
+        while True:
+            iteration += 1
+            if self.verbose:
+                print(f"\n--- Iteration {iteration} ---")
+                print(
+                    f"Time elapsed: {time.time() - start_time:.2f}s / {time_limit:.2f}s"
+                )
+
+            elapsed = time.time() - start_time
+            remaining = time_limit - elapsed
+            if remaining <= 0:
+                if self.verbose:
+                    print("Time limit reached.")
+                break
+
+            # Re-inject warm start if available
+            if start_list:
+                model.start = start_list
+
+            status = model.optimize(max_seconds=remaining)
+
+            if status not in [
+                mip.OptimizationStatus.OPTIMAL,
+                mip.OptimizationStatus.FEASIBLE,
+            ]:
+                break
+
+            # Check for subtours
+            new_cuts = 0
+
+            # Iterate over each drone
+            for k in range(self.k_drones):
+                # Build graph of visited edges for this drone
+                adj = {i: [] for i in range(self.num_nodes)}
+                adj_rev = {i: [] for i in range(self.num_nodes)}
+
+                # Get current values
+                for (d, u, v), var in x.items():
+                    if d == k and var.x >= 0.5:
+                        adj[u].append(v)
+                        adj_rev[v].append(u)
+
+                # 1. Find nodes reachable from 0 (Depot)
+                reachable = {0}
+                queue = [0]
+                while queue:
+                    u = queue.pop(0)
+                    for v in adj[u]:
+                        if v not in reachable:
+                            reachable.add(v)
+                            queue.append(v)
+
+                # 2. Identify owned nodes that are NOT reachable
+                unreachable_owned = []
+                for j in range(1, self.num_nodes):
+                    y_var = y.get((k, j))
+                    if y_var and y_var.x >= 0.5:
+                        if j not in reachable:
+                            unreachable_owned.append(j)
+
+                # 3. If we have unreachable owned nodes, generate cuts
+                processed = set()
+                for node in unreachable_owned:
+                    if node in processed:
+                        continue
+
+                    # Find the component (island) this node belongs to.
+                    component = {node}
+                    q_comp = [node]
+                    processed.add(node)
+
+                    while q_comp:
+                        u = q_comp.pop(0)
+                        # Forward edges
+                        for v in adj[u]:
+                            if v not in reachable and v not in component:
+                                component.add(v)
+                                processed.add(v)
+                                q_comp.append(v)
+                        # Backward edges
+                        for v in adj_rev[u]:
+                            if v not in reachable and v not in component:
+                                component.add(v)
+                                processed.add(v)
+                                q_comp.append(v)
+
+                    # Generate cut for this component S = component
+                    # Cut: sum(x_ij for i not in S, j in S) >= y_v
+
+                    cut_expr = mip.xsum(
+                        x[(k, i, j)]
+                        for j in component
+                        for i in range(self.num_nodes)
+                        if i not in component and (k, i, j) in x
+                    )
+
+                    model.add_constr(
+                        cut_expr >= y[(k, node)],
+                        name=f"subtour_{k}_{node}_{int(time.time()*1000)}",
+                    )
+                    new_cuts += 1
+
+            if new_cuts == 0:
+                if self.verbose:
+                    print("No subtours found. Solution is valid.")
+                break
+            else:
+                if self.verbose:
+                    print(f"Found {new_cuts} subtours. Added cuts and re-solving...")
 
         if (
             status == mip.OptimizationStatus.OPTIMAL
