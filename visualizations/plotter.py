@@ -7,7 +7,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from utils import Point3D
 
 
-def htmpl_plot_generator(
+def html_plot_generator(
     points: list[Point3D],
     arcs,
     entry_points_idx,

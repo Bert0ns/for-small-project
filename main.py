@@ -2,7 +2,7 @@ from typing import Final
 import sys
 from pathlib import Path
 from utils import Point3D, read_points_from_csv
-from visualizations.plotter import htmpl_plot_generator
+from visualizations.plotter import html_plot_generator
 
 
 # Number of drones
@@ -12,7 +12,7 @@ SPEED_UP = 1.0
 SPEED_DOWN = 2.0
 SPEED_HORIZONTAL = 1.5
 SOLVER_TIME_LIMIT = 9000  # seconds
-SOLVER_MIP_GAP = 0.0  # relative gap for faster solves
+SOLVER_MIP_GAP = 0.05  # relative gap for faster solves
 WARM_START = True  # whether to use warm start or not
 
 # Initial points for each building
@@ -35,7 +35,7 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Error reading points from '{csv_path}': {e}", file=sys.stderr)
         sys.exit(1)
-        
+
     # Check if there are duplicates while preserving input order
     seen = set()
     deduped = []
@@ -47,7 +47,9 @@ if __name__ == "__main__":
         deduped.append(p)
 
     if len(deduped) != len(points):
-        print("WARNING: Duplicate points found in the input data. Keeping first occurrence of each.")
+        print(
+            "WARNING: Duplicate points found in the input data. Keeping first occurrence of each."
+        )
         points = deduped
         print(f"Total unique points after removing duplicates: {len(points)}")
     else:
@@ -58,12 +60,16 @@ if __name__ == "__main__":
     if "1" in name or "edificio1" in name or "building1" in name:
         ENTRY_THRESHOLD = -12.5
         base_point = BASE_POINT_B1
-        solution_plot_name = "visualizations/after_solution/Building1_visualization_solution.html"
+        solution_plot_name = (
+            "visualizations/after_solution/Building1_visualization_solution.html"
+        )
         before_solution_plot_name = "visualizations/before_solution/Building1_visualization_before_solution.html"
     else:
         ENTRY_THRESHOLD = -20.0
         base_point = BASE_POINT_B2
-        solution_plot_name = "visualizations/after_solution/Building2_visualization_solution.html"
+        solution_plot_name = (
+            "visualizations/after_solution/Building2_visualization_solution.html"
+        )
         before_solution_plot_name = "visualizations/before_solution/Building2_visualization_before_solution.html"
     print(f"Initial point chosen: {base_point}")
 
@@ -86,9 +92,9 @@ if __name__ == "__main__":
     print(
         f"Graph has {len(points)} points and {len(arcs)} arcs. number of costs: {len(costs)}"
     )
-    
+
     print("Generating pre-solution plot...")
-    htmpl_plot_generator(
+    html_plot_generator(
         points,
         arcs,
         entry_points_idx,
@@ -97,11 +103,13 @@ if __name__ == "__main__":
     )
 
     print("Solving routing problem...")
-    paths = solver.solve(max_seconds=SOLVER_TIME_LIMIT, mip_gap=SOLVER_MIP_GAP, warm_start=WARM_START)
+    paths = solver.solve(
+        max_seconds=SOLVER_TIME_LIMIT, mip_gap=SOLVER_MIP_GAP, warm_start=WARM_START
+    )
 
     if paths:
         print("Routing problem solved. Generating solution plot...")
-        htmpl_plot_generator(
+        html_plot_generator(
             points,
             arcs,
             entry_points_idx,

@@ -7,7 +7,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from utils import Point3D, read_points_from_csv
 from solver import DroneRoutingSolver
-from visualizations.plotter import htmpl_plot_generator
+from visualizations.plotter import html_plot_generator
 
 # Initial points for each building (copied from main.py)
 BASE_POINT_B1 = Point3D(0.0, -16.0, 0.0)
@@ -73,7 +73,7 @@ def main():
 
     print(f"Generating visualization to {output_path}...")
 
-    htmpl_plot_generator(
+    html_plot_generator(
         points=solver.points,
         arcs=solver.arcs,
         entry_points_idx=solver.entry_points_idx,

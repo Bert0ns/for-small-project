@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from utils import Point3D, read_points_from_csv
-from visualizations.plotter import htmpl_plot_generator
+from visualizations.plotter import html_plot_generator
 from solver import DroneRoutingSolver
 
 
@@ -66,7 +66,7 @@ if __name__ == "__main__":
         f"Graph has {len(points)} points and {len(arcs)} arcs. number of costs: {len(costs)}"
     )
 
-    htmpl_plot_generator(
+    html_plot_generator(
         points,
         arcs,
         entry_points_idx,
@@ -86,11 +86,11 @@ if __name__ == "__main__":
     """
 
     paths = []
-    for line in paths_dummy_string.strip().split('\n'):
+    for line in paths_dummy_string.strip().split("\n"):
         if "Drone" in line:
             try:
-                path_str = line.split(':')[1].strip()
-                path = [int(node) for node in path_str.split('-')]
+                path_str = line.split(":")[1].strip()
+                path = [int(node) for node in path_str.split("-")]
                 paths.append(path)
             except Exception as e:
                 print(f"Error parsing line: {line}. Error: {e}")
@@ -100,7 +100,7 @@ if __name__ == "__main__":
 
     if paths:
         print("Routing problem solved. Generating solution plot...")
-        htmpl_plot_generator(
+        html_plot_generator(
             points,
             arcs,
             entry_points_idx,
