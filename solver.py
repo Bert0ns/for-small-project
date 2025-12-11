@@ -397,7 +397,7 @@ class DroneRoutingSolver:
 
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = mip_gap
-        model.threads = 1
+        model.threads = -1
         model.verbose = self.verbose
         model.cuts = 2  # Aggressive cut generation
         # model.presolve = -1  # Enable presolve
