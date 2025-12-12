@@ -1,12 +1,15 @@
+"""
+Drone Routing Problem Solver using MIP and Heuristic DFS Warm Start (v8)
+"""
+
+import time
+import multiprocessing
+import random
+import sys
 from typing import List, Tuple, Dict, Set
 import mip
 import networkx as nx
 import numpy as np
-import time
-import concurrent.futures
-import multiprocessing
-import random
-import sys
 from utils import Point3D, calc_time_between_points
 
 
