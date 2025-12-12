@@ -317,10 +317,17 @@ class DroneRoutingSolver:
                 outgoing = mip.xsum(x[(k, j, l)] for l in V if (j, l) in self.arcs)
                 model += incoming == outgoing
 
-        # 6.3 Depot Constraints
+        # 6.3 Depot Constraints (Optional Drones)
+        # Each drone may leave and return at most once
         for k in K:
-            model += mip.xsum(x[(k, 0, j)] for j in V_prime if (0, j) in self.arcs) == 1
-            model += mip.xsum(x[(k, i, 0)] for i in V_prime if (i, 0) in self.arcs) == 1
+            model += mip.xsum(x[(k, 0, j)] for j in V_prime if (0, j) in self.arcs) <= 1  # type: ignore
+            model += mip.xsum(x[(k, i, 0)] for i in V_prime if (i, 0) in self.arcs) <= 1  # type: ignore
+
+        # Balance constraint: if a drone leaves, it must return
+        for k in K:
+            outgoing = mip.xsum(x[(k, 0, j)] for j in V_prime if (0, j) in self.arcs)
+            incoming = mip.xsum(x[(k, i, 0)] for i in V_prime if (i, 0) in self.arcs)
+            model += outgoing == incoming
 
         # 6.4 Min-Max Time Bound
         for k in K:
@@ -336,11 +343,26 @@ class DroneRoutingSolver:
         model += Z >= total_time / self.k_drones  # type: ignore
 
         # 6.6 Symmetry Breaking
-        # sum(j * x_0j^k) <= sum(j * x_0j^{k+1}) - 1
+        # 1. Force drones to be used in order: if k+1 is used, k must be used.
+        # sum(x_0j^{k+1}) <= sum(x_0j^k)
+        # 2. If both are used, force ordering by first visited node index.
+        # sum(j * x_0j^k) + 1 <= sum(j * x_0j^{k+1}) + M * (1 - sum(x_0j^{k+1}))
+
+        M = self.num_nodes + 2
         for k in range(self.k_drones - 1):
-            lhs = mip.xsum(j * x[(k, 0, j)] for j in V_prime if (0, j) in self.arcs)
-            rhs = mip.xsum(j * x[(k + 1, 0, j)] for j in V_prime if (0, j) in self.arcs)
-            model += lhs <= rhs - 1  # type: ignore
+            u_k = mip.xsum(x[(k, 0, j)] for j in V_prime if (0, j) in self.arcs)
+            u_next = mip.xsum(x[(k + 1, 0, j)] for j in V_prime if (0, j) in self.arcs)
+
+            s_k = mip.xsum(j * x[(k, 0, j)] for j in V_prime if (0, j) in self.arcs)
+            s_next = mip.xsum(
+                j * x[(k + 1, 0, j)] for j in V_prime if (0, j) in self.arcs
+            )
+
+            # Force usage order
+            model += u_next <= u_k  # type: ignore
+
+            # Force index ordering if next drone is used
+            model += s_k + 1 <= s_next + M * (1 - u_next)  # type: ignore
 
         # Initial Lower Bound for Z
         max_min_trip = self._get_makespan_lower_bound()

@@ -14,6 +14,7 @@ SPEED_HORIZONTAL = 1.5
 SOLVER_TIME_LIMIT = 9000  # seconds
 SOLVER_MIP_GAP = 0.015  # relative gap for faster solves
 WARM_START = True  # whether to use warm start or not
+VERBOSE = True  # whether to print solver logs
 
 # Initial points for each building
 BASE_POINT_B1: Final[Point3D] = Point3D(0.0, -16.0, 0.0)
@@ -84,7 +85,7 @@ if __name__ == "__main__":
         speed_up=SPEED_UP,
         speed_down=SPEED_DOWN,
         speed_horizontal=SPEED_HORIZONTAL,
-        verbose=True,
+        verbose=VERBOSE,
     )
 
     points, arcs, costs, entry_points_idx = solver.get_graph()

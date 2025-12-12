@@ -43,10 +43,13 @@ $$ \sum_{i \in V, (i,j) \in A} x_{ij}^k = \sum_{l \in V, (j,l) \in A} x_{jl}^k \
 
 ### 6.3 Depot Constraints
 
-Each drone must leave the base exactly once and return to the base exactly once:
+Each drone may leave the base at most once and return to the base at most once. Additionally, if a drone leaves the base, it must return to it (balance constraint):
 
-$$ \sum_{j \in V', (0,j) \in A} x_{0j}^k = 1 \quad \forall k \in K $$
-$$ \sum_{i \in V', (i,0) \in A} x_{i0}^k = 1 \quad \forall k \in K $$
+$$ \sum_{j \in V', (0,j) \in A} x_{0j}^k \le 1 \quad \forall k \in K $$
+
+$$ \sum_{i \in V', (i,0) \in A} x_{i0}^k \le 1 \quad \forall k \in K $$
+
+$$ \sum_{j \in V', (0,j) \in A} x_{0j}^k = \sum_{i \in V', (i,0) \in A} x_{i0}^k \quad \forall k \in K $$
 
 ### 6.4 Min-Max Time Bound
 
@@ -60,11 +63,16 @@ The maximum time must be at least the average time of all drones. This strengthe
 
 $$ Z \ge \frac{1}{|K|} \sum_{k \in K} \sum_{(i,j) \in A} t_{ij} \cdot x_{ij}^k $$
 
-### 6.6 Symmetry Breaking (Start Node Ordering)
+### 6.6 Symmetry Breaking
 
-To remove equivalent permutations of drones, we force the index of the first target visited by drone $k$ to be strictly less than that of drone $k+1$. This assumes $V'$ indices are integers $\{1, \dots, N\}$.
+To avoid equivalent solutions that differ only by permuting the drones, we impose two rules:
 
-$$ \sum_{j \in V'} j \cdot x_{0j}^k \le \sum_{j \in V'} j \cdot x_{0j}^{k+1} - 1 \quad \forall k \in \{1, \dots, |K|-1\} $$
+1. **Drone Usage Order**: Drones must be utilized sequentially. Drone $k+1$ can only be used if drone $k$ is used.
+   $$ \sum_{j \in V'} x_{0j}^{k+1} \le \sum_{j \in V'} x_{0j}^k \quad \forall k \in \{1, \dots, |K|-1\} $$
+
+2. **Start Node Ordering**: If both drone $k$ and drone $k+1$ are used, the index of the first target visited by drone $k$ must be strictly less than that of drone $k+1$.
+   $$ \sum_{j \in V'} j \cdot x_{0j}^k + 1 \le \sum_{j \in V'} j \cdot x_{0j}^{k+1} + M \left(1 - \sum_{j \in V'} x_{0j}^{k+1}\right) $$
+   where $M$ is a sufficiently large constant (e.g., $|V| + 2$).
 
 ### 6.7 Dynamic Subtour Elimination (Lazy Constraints)
 
