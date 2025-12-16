@@ -12,7 +12,7 @@ SPEED_UP = 1.0
 SPEED_DOWN = 2.0
 SPEED_HORIZONTAL = 1.5
 SOLVER_TIME_LIMIT = 9000  # seconds
-SOLVER_MIP_GAP = 0.001  # relative gap for faster solves
+SOLVER_MIP_GAP = 0.5  # relative gap for faster solves
 WARM_START = True  # whether to use warm start or not
 
 # Initial points for each building
