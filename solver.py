@@ -281,9 +281,6 @@ class DroneRoutingSolver:
         # T: makespan
         T = model.add_var(var_type=mip.CONTINUOUS, lb=0.0, name="T")  # type: ignore
 
-        # z[k]: 1 if drone k is used
-        z = {k: model.add_var(var_type=mip.BINARY, name=f"z_{k}") for k in K}
-
         # f[k, i, j]: flow variables for connectivity
         f = {}
         for k in K:
@@ -314,17 +311,17 @@ class DroneRoutingSolver:
                     name=f"out_degree_{k}_{j}",
                 )
 
-        # 3. Base Station Constraints (optional drones)
+        # 3. Base Station Constraints (All drones used)
         for k in K:
             base_outgoing = self.out_edges[0]
             model.add_constr(
-                mip.xsum(x[(k, 0, j)] for j in base_outgoing) == z[k],
+                mip.xsum(x[(k, 0, j)] for j in base_outgoing) == 1,
                 name=f"base_out_{k}",
             )
 
             base_incoming = in_edges[0]
             model.add_constr(
-                mip.xsum(x[(k, i, 0)] for i in base_incoming) == z[k],
+                mip.xsum(x[(k, i, 0)] for i in base_incoming) == 1,
                 name=f"base_in_{k}",
             )
 
@@ -366,19 +363,20 @@ class DroneRoutingSolver:
                 mip.xsum(y[(k, j)] for j in P) >= mip.xsum(y[(k + 1, j)] for j in P),
                 name=f"symmetry_size_{k}",
             )
-            model.add_constr(z[k] >= z[k + 1], name=f"symmetry_active_{k}")
 
-        # 7. Activation linking
-        big_m_nodes = float(len(P))
+        # 7. Minimum workload (All drones used)
         for k in K:
+            # Each drone must visit at least one target node
             model.add_constr(
-                mip.xsum(y[(k, j)] for j in P) <= big_m_nodes * z[k],  # type: ignore
-                name=f"activation_{k}",
-            )
-            model.add_constr(
-                mip.xsum(y[(k, j)] for j in P) >= z[k],
+                mip.xsum(y[(k, j)] for j in P) >= 1,
                 name=f"activation_lower_{k}",
             )
+
+        # 6.5 Valid Inequality: Lower Bound on Z
+        total_time = mip.xsum(
+            self.costs[(i, j)] * x[(k, i, j)] for k in K for (i, j) in self.arcs
+        )
+        model += T >= total_time / self.k_drones  # type: ignore
 
         # Warm Start
         if warm_start:
@@ -395,10 +393,6 @@ class DroneRoutingSolver:
                     for (k, j), val in y_sol.items():
                         if (k, j) in y:
                             start_list.append((y[(k, j)], val))
-
-                    for k, val in z_sol.items():
-                        if k in z:
-                            start_list.append((z[k], val))
 
                     model.start = start_list
                     T.ub = greedy_makespan  # type: ignore
@@ -425,7 +419,7 @@ class DroneRoutingSolver:
         ):
             if self.verbose:
                 print(f"Solution found! Objective: {model.objective_value}")
-            return self._extract_solution(x, z)
+            return self._extract_solution(x)
         else:
             if self.verbose:
                 print("No solution found.")
@@ -455,16 +449,9 @@ class DroneRoutingSolver:
             print("An error occurred: Could not compute lower bound for makespan T.")
             return 0.0
 
-    def _extract_solution(self, x, z):
+    def _extract_solution(self, x):
         paths = []
         for k in range(self.k_drones):
-            active = z[k].x is not None and z[k].x > 0.5
-            if not active:
-                paths.append([0, 0])
-                if self.verbose:
-                    print(f"Drone {k+1}: 0-0")
-                continue
-
             # Build adjacency (each arc used at most once)
             adj = {}
             for (d, u, v), var in x.items():
