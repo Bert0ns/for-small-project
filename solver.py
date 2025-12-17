@@ -20,6 +20,7 @@ class DroneRoutingSolver:
         speed_down: float = 2.0,
         speed_horizontal: float = 1.5,
         verbose: bool = False,
+        prune_top_out_degree: int = 0,
     ):
         self.points = [base_point] + points
         self.entry_threshold = entry_threshold
@@ -29,6 +30,7 @@ class DroneRoutingSolver:
         self.speed_up = speed_up
         self.speed_down = speed_down
         self.speed_horizontal = speed_horizontal
+        self.prune_top_out_degree = prune_top_out_degree
 
         self.num_nodes = len(self.points)
 
@@ -38,6 +40,57 @@ class DroneRoutingSolver:
         self.costs: Dict[Tuple[int, int], float] = {}
         self.graph = nx.DiGraph()
         self._build_graph()
+
+    def _prune_arcs_heuristic(self, top_out_degree=2):
+        """PRUNE while preserving connectivity, but keep a few cheap options"""
+        try:
+            # Shortest-path trees (forward and backward) to ensure reachability
+            paths_from_base = nx.single_source_dijkstra_path(
+                self.graph, 0, weight="weight"
+            )
+            paths_to_base_rev = nx.single_source_dijkstra_path(
+                self.graph.reverse(copy=False), 0, weight="weight"
+            )
+
+            mandatory_edges = set()
+
+            # Edges from base -> node (original direction)
+            for path in paths_from_base.values():
+                for a, b in zip(path, path[1:]):
+                    mandatory_edges.add((a, b))
+
+            # Edges from node -> base (convert from reversed graph paths)
+            for path in paths_to_base_rev.values():
+                for a, b in zip(path, path[1:]):  # edges in reversed graph: a -> b
+                    mandatory_edges.add((b, a))  # original direction: b -> a
+
+            for u in range(1, self.num_nodes):  # skip base node 0
+                out_e = list(self.graph.out_edges(u, data=True))
+                if not out_e:
+                    continue
+
+                # Always keep mandatory edges out of u
+                keep_targets = {v for (a, v) in mandatory_edges if a == u}
+
+                # Sort by weight and keep up to top_out_degree cheapest (include ties at cutoff)
+                out_e.sort(key=lambda t: t[2]["weight"])
+                cutoff_idx = min(top_out_degree, len(out_e)) - 1
+                cutoff_w = out_e[cutoff_idx][2]["weight"]
+                keep_targets |= {
+                    v for (_, v, data) in out_e if data["weight"] <= cutoff_w
+                }
+
+                for _, v, _ in out_e:
+                    if v not in keep_targets:
+                        self.graph.remove_edge(u, v)
+                
+            print("Graph pruned using heuristic while preserving connectivity. top_out_degree =", top_out_degree)
+
+        except nx.NetworkXNoPath:
+            if self.verbose:
+                print(
+                    "Warning: Graph not fully connected before pruning; skipping pruning to avoid disconnecting it."
+                )
 
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
@@ -116,6 +169,9 @@ class DroneRoutingSolver:
             print(
                 f"NetworkX Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges"
             )
+
+        if self.prune_top_out_degree > 0:
+            self._prune_arcs_heuristic(top_out_degree=self.prune_top_out_degree)
 
         # Populate arcs and costs for the MIP solver
         self.out_edges = {i: [] for i in range(self.num_nodes)}
@@ -240,7 +296,13 @@ class DroneRoutingSolver:
         return self.points, self.arcs, self.costs, self.entry_points_idx
 
     def solve(
-        self, max_seconds: int = 300, mip_gap: float = 0.02, warm_start: bool = True
+        self,
+        max_seconds: int = 300,
+        mip_gap: float = 0.02,
+        warm_start: bool = True,
+        prune: bool = True,
+        max_out_degree: int = 25,
+        cost_factor: float = 45.0,
     ):
         """
         Builds and solves the MIP model for the mTSP variant:
@@ -248,7 +310,6 @@ class DroneRoutingSolver:
         - No revisits of target nodes (binary x, degree = 1 in/out for owned nodes)
         - Minimize makespan
         """
-
         model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
         model.max_mip_gap = mip_gap
         model.threads = -1
@@ -411,7 +472,7 @@ class DroneRoutingSolver:
         T.lb = max_min_trip  # type: ignore
 
         # Solve
-        status = model.optimize(max_seconds=float(max_seconds)) # type: ignore
+        status = model.optimize(max_seconds=float(max_seconds))  # type: ignore
 
         if (
             status == mip.OptimizationStatus.OPTIMAL
