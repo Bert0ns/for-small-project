@@ -90,17 +90,6 @@ class DroneRoutingSolver:
                     "Warning: Graph not fully connected before pruning; skipping pruning to avoid disconnecting it."
                 )
 
-    def prune_graph(self, top_out_degree=2):
-        """Public method to prune the graph using the heuristic."""
-        self._prune_arcs_heuristic(top_out_degree=top_out_degree)
-
-        # Populate arcs and costs for the MIP solver
-        self.out_edges = {i: [] for i in range(self.num_nodes)}
-        for u, v, data in self.graph.edges(data=True):
-            self.arcs.add((u, v))
-            self.costs[(u, v)] = data["weight"]
-            self.out_edges[u].append(v)
-
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
         if self.verbose:
@@ -288,6 +277,65 @@ class DroneRoutingSolver:
         greedy_makespan = max(drone_times.values())
         return x_sol, y_sol, z_sol, greedy_makespan
 
+    def _get_makespan_lower_bound(self) -> float:
+        """
+        Computes a lower bound for the makespan T based on shortest round trips.
+        T >= max(shortest_round_trip(0 -> j -> 0)) for all j
+        """
+        try:
+            dists_from_base = nx.shortest_path_length(
+                self.graph, source=0, weight="weight"
+            )
+            dists_to_base = nx.shortest_path_length(
+                self.graph.reverse(), source=0, weight="weight"
+            )
+
+            max_min_trip = 0.0
+            for j in range(1, self.num_nodes):
+                if j in dists_from_base and j in dists_to_base:
+                    trip = dists_from_base[j] + dists_to_base[j]
+                    max_min_trip = max(max_min_trip, trip)
+
+            return max_min_trip
+        except Exception:
+            print("An error occurred: Could not compute lower bound for makespan T.")
+            return 0.0
+
+    def _extract_solution(self, x):
+        paths = []
+        for k in range(self.k_drones):
+            # Build adjacency (each arc used at most once)
+            adj = {}
+            for (d, u, v), var in x.items():
+                if d == k and var.x is not None and var.x > 0.5:
+                    adj.setdefault(u, []).append(v)
+
+            if 0 not in adj or not adj[0]:
+                path = [0, 0]
+                paths.append(path)
+                if self.verbose:
+                    print(f"Drone {k+1}: {'-'.join(map(str, path))}")
+                continue
+
+            # Simple path reconstruction since degrees are 1 (Eulerian but without repeats)
+            path = [0]
+            current = 0
+            while current in adj and adj[current]:
+                nxt = adj[current].pop()
+                path.append(nxt)
+                current = nxt
+                if current == 0:
+                    break
+
+            if current != 0:
+                path.append(0)  # safety fallback
+
+            if self.verbose:
+                print(f"Drone {k+1}: {'-'.join(map(str, path))}")
+            paths.append(path)
+
+        return paths
+
     def get_graph(self):
         """
         Returns the graph representation: nodes, arcs, and costs.
@@ -300,6 +348,17 @@ class DroneRoutingSolver:
                 - Set of entry point indices
         """
         return self.points, self.arcs, self.costs, self.entry_points_idx
+
+    def prune_graph(self, top_out_degree=2):
+        """Public method to prune the graph using the heuristic."""
+        self._prune_arcs_heuristic(top_out_degree=top_out_degree)
+
+        # Populate arcs and costs for the MIP solver
+        self.out_edges = {i: [] for i in range(self.num_nodes)}
+        for u, v, data in self.graph.edges(data=True):
+            self.arcs.add((u, v))
+            self.costs[(u, v)] = data["weight"]
+            self.out_edges[u].append(v)
 
     def solve(
         self,
@@ -491,62 +550,3 @@ class DroneRoutingSolver:
             if self.verbose:
                 print("No solution found.")
             return []
-
-    def _get_makespan_lower_bound(self) -> float:
-        """
-        Computes a lower bound for the makespan T based on shortest round trips.
-        T >= max(shortest_round_trip(0 -> j -> 0)) for all j
-        """
-        try:
-            dists_from_base = nx.shortest_path_length(
-                self.graph, source=0, weight="weight"
-            )
-            dists_to_base = nx.shortest_path_length(
-                self.graph.reverse(), source=0, weight="weight"
-            )
-
-            max_min_trip = 0.0
-            for j in range(1, self.num_nodes):
-                if j in dists_from_base and j in dists_to_base:
-                    trip = dists_from_base[j] + dists_to_base[j]
-                    max_min_trip = max(max_min_trip, trip)
-
-            return max_min_trip
-        except Exception:
-            print("An error occurred: Could not compute lower bound for makespan T.")
-            return 0.0
-
-    def _extract_solution(self, x):
-        paths = []
-        for k in range(self.k_drones):
-            # Build adjacency (each arc used at most once)
-            adj = {}
-            for (d, u, v), var in x.items():
-                if d == k and var.x is not None and var.x > 0.5:
-                    adj.setdefault(u, []).append(v)
-
-            if 0 not in adj or not adj[0]:
-                path = [0, 0]
-                paths.append(path)
-                if self.verbose:
-                    print(f"Drone {k+1}: {'-'.join(map(str, path))}")
-                continue
-
-            # Simple path reconstruction since degrees are 1 (Eulerian but without repeats)
-            path = [0]
-            current = 0
-            while current in adj and adj[current]:
-                nxt = adj[current].pop()
-                path.append(nxt)
-                current = nxt
-                if current == 0:
-                    break
-
-            if current != 0:
-                path.append(0)  # safety fallback
-
-            if self.verbose:
-                print(f"Drone {k+1}: {'-'.join(map(str, path))}")
-            paths.append(path)
-
-        return paths
