@@ -20,7 +20,6 @@ class DroneRoutingSolver:
         speed_down: float = 2.0,
         speed_horizontal: float = 1.5,
         verbose: bool = False,
-        prune_top_out_degree: int = 0,
     ):
         self.points = [base_point] + points
         self.entry_threshold = entry_threshold
@@ -30,7 +29,6 @@ class DroneRoutingSolver:
         self.speed_up = speed_up
         self.speed_down = speed_down
         self.speed_horizontal = speed_horizontal
-        self.prune_top_out_degree = prune_top_out_degree
 
         self.num_nodes = len(self.points)
 
@@ -83,7 +81,7 @@ class DroneRoutingSolver:
                 for _, v, _ in out_e:
                     if v not in keep_targets:
                         self.graph.remove_edge(u, v)
-                
+
             print("Graph pruned using heuristic while preserving connectivity. top_out_degree =", top_out_degree)
 
         except nx.NetworkXNoPath:
@@ -91,6 +89,17 @@ class DroneRoutingSolver:
                 print(
                     "Warning: Graph not fully connected before pruning; skipping pruning to avoid disconnecting it."
                 )
+
+    def prune_graph(self, top_out_degree=2):
+        """Public method to prune the graph using the heuristic."""
+        self._prune_arcs_heuristic(top_out_degree=top_out_degree)
+
+        # Populate arcs and costs for the MIP solver
+        self.out_edges = {i: [] for i in range(self.num_nodes)}
+        for u, v, data in self.graph.edges(data=True):
+            self.arcs.add((u, v))
+            self.costs[(u, v)] = data["weight"]
+            self.out_edges[u].append(v)
 
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
@@ -169,9 +178,6 @@ class DroneRoutingSolver:
             print(
                 f"NetworkX Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges"
             )
-
-        if self.prune_top_out_degree > 0:
-            self._prune_arcs_heuristic(top_out_degree=self.prune_top_out_degree)
 
         # Populate arcs and costs for the MIP solver
         self.out_edges = {i: [] for i in range(self.num_nodes)}
