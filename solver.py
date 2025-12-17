@@ -39,67 +39,82 @@ class DroneRoutingSolver:
         self.graph = nx.DiGraph()
         self._build_graph()
 
-    def _prune_arcs_heuristic(self, top_out_degree=2):
-        """PRUNE while preserving connectivity, but keep a few cheap options"""
+    def _prune_arcs_heuristic(self, top_out_degree=2, top_in_degree=3):
+        """Deterministic prune: keep shortest-path edges (to/from base) and cap cheap out/in degrees. Revert if reachability is lost."""
+        G_orig = self.graph
+        G = G_orig.copy()
+
         try:
-            # Shortest-path trees (forward and backward) to ensure reachability
-            paths_from_base = nx.single_source_dijkstra_path(
-                self.graph, 0, weight="weight"
+            dist_fwd = nx.single_source_dijkstra_path_length(G, 0, weight="weight")
+            dist_bwd = nx.single_source_dijkstra_path_length(
+                G.reverse(copy=False), 0, weight="weight"
             )
-            paths_to_base_rev = nx.single_source_dijkstra_path(
-                self.graph.reverse(copy=False), 0, weight="weight"
-            )
-
-            mandatory_edges = set()
-
-            # Edges from base -> node (original direction)
-            for path in paths_from_base.values():
-                for a, b in zip(path, path[1:]):
-                    mandatory_edges.add((a, b))
-
-            # Edges from node -> base (convert from reversed graph paths)
-            for path in paths_to_base_rev.values():
-                for a, b in zip(path, path[1:]):  # edges in reversed graph: a -> b
-                    mandatory_edges.add((b, a))  # original direction: b -> a
-
-            for u in range(1, self.num_nodes):  # skip base node 0
-                out_e = list(self.graph.out_edges(u, data=True))
-                if not out_e:
-                    continue
-
-                # Always keep mandatory edges out of u
-                keep_targets = {v for (a, v) in mandatory_edges if a == u}
-
-                # Sort by weight and keep up to top_out_degree cheapest (include ties at cutoff)
-                out_e.sort(key=lambda t: t[2]["weight"])
-                cutoff_idx = min(top_out_degree, len(out_e)) - 1
-                cutoff_w = out_e[cutoff_idx][2]["weight"]
-                keep_targets |= {
-                    v for (_, v, data) in out_e if data["weight"] <= cutoff_w
-                }
-
-                for _, v, _ in out_e:
-                    if v not in keep_targets:
-                        self.graph.remove_edge(u, v)
-
-            print("Graph pruned using heuristic while preserving connectivity. top_out_degree =", top_out_degree)
-
         except nx.NetworkXNoPath:
             if self.verbose:
+                print("Warning: Graph not fully connected before pruning; skipping pruning.")
+            return
+
+        # If not all nodes reachable both ways, skip pruning
+        if len(dist_fwd) < self.num_nodes or len(dist_bwd) < self.num_nodes:
+            if self.verbose:
+                print("Warning: Incomplete reachability before pruning; skipping pruning.")
+            return
+
+        mandatory_edges = set()
+        # Edges on any shortest path base -> v
+        for u, v, data in G.edges(data=True):
+            w = data["weight"]
+            if u in dist_fwd and v in dist_fwd and abs(dist_fwd[u] + w - dist_fwd[v]) < 1e-9:
+                mandatory_edges.add((u, v))
+        # Edges on any shortest path v -> base (using reversed distances)
+        for u, v, data in G.edges(data=True):
+            w = data["weight"]
+            # in reversed graph, edge is v -> u
+            if v in dist_bwd and u in dist_bwd and abs(dist_bwd[v] + w - dist_bwd[u]) < 1e-9:
+                mandatory_edges.add((u, v))
+
+        # Outgoing pruning per node (non-base)
+        for u in range(1, self.num_nodes):
+            out_e = list(G.out_edges(u, data=True))
+            if not out_e:
+                continue
+            keep_targets = {v for (a, v) in mandatory_edges if a == u}
+            out_e.sort(key=lambda t: (t[2]["weight"], t[1]))  # deterministic
+            cutoff_idx = min(top_out_degree, len(out_e)) - 1
+            cutoff_w = out_e[cutoff_idx][2]["weight"]
+            keep_targets |= {v for (_, v, data) in out_e if data["weight"] <= cutoff_w}
+            for _, v, _ in out_e:
+                if v not in keep_targets:
+                    G.remove_edge(u, v)
+
+        # Incoming pruning per node (non-base)
+        for v in range(1, self.num_nodes):
+            in_e = list(G.in_edges(v, data=True))
+            if not in_e:
+                continue
+            keep_sources = {u for (u, b) in mandatory_edges if b == v}
+            in_e.sort(key=lambda t: (t[2]["weight"], t[0]))  # deterministic
+            cutoff_idx = min(top_in_degree, len(in_e)) - 1
+            cutoff_w = in_e[cutoff_idx][2]["weight"]
+            keep_sources |= {u for (u, _, data) in in_e if data["weight"] <= cutoff_w}
+            for u, _, _ in in_e:
+                if u not in keep_sources:
+                    G.remove_edge(u, v)
+
+        # Verify reachability after pruning
+        dist_fwd_after = nx.single_source_dijkstra_path_length(G, 0, weight="weight")
+        dist_bwd_after = nx.single_source_dijkstra_path_length(
+            G.reverse(copy=False), 0, weight="weight"
+        )
+        if len(dist_fwd_after) == self.num_nodes and len(dist_bwd_after) == self.num_nodes:
+            self.graph = G
+            if self.verbose:
                 print(
-                    "Warning: Graph not fully connected before pruning; skipping pruning to avoid disconnecting it."
+                    f"Graph pruned deterministically (top_out={top_out_degree}, top_in={top_in_degree}); reachability preserved."
                 )
-
-    def prune_graph(self, top_out_degree=2):
-        """Public method to prune the graph using the heuristic."""
-        self._prune_arcs_heuristic(top_out_degree=top_out_degree)
-
-        # Populate arcs and costs for the MIP solver
-        self.out_edges = {i: [] for i in range(self.num_nodes)}
-        for u, v, data in self.graph.edges(data=True):
-            self.arcs.add((u, v))
-            self.costs[(u, v)] = data["weight"]
-            self.out_edges[u].append(v)
+        else:
+            if self.verbose:
+                print("Pruning would disconnect the graph; reverting to the original graph.")
 
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
@@ -180,11 +195,7 @@ class DroneRoutingSolver:
             )
 
         # Populate arcs and costs for the MIP solver
-        self.out_edges = {i: [] for i in range(self.num_nodes)}
-        for u, v, data in self.graph.edges(data=True):
-            self.arcs.add((u, v))
-            self.costs[(u, v)] = data["weight"]
-            self.out_edges[u].append(v)
+        self._refresh_arc_data()
 
         if not self.entry_points_idx:
             raise ValueError(
@@ -193,6 +204,16 @@ class DroneRoutingSolver:
 
         if self.verbose:
             print(f"Total directed arcs for MIP: {len(self.arcs)}")
+
+    def _refresh_arc_data(self):
+        """Rebuild arc-related structures from the current graph."""
+        self.arcs = set()
+        self.costs = {}
+        self.out_edges = {i: [] for i in range(self.num_nodes)}
+        for u, v, data in self.graph.edges(data=True):
+            self.arcs.add((u, v))
+            self.costs[(u, v)] = data["weight"]
+            self.out_edges[u].append(v)
 
     def _generate_no_revisit_greedy_solution(self):
         """
@@ -288,6 +309,65 @@ class DroneRoutingSolver:
         greedy_makespan = max(drone_times.values())
         return x_sol, y_sol, z_sol, greedy_makespan
 
+    def _get_makespan_lower_bound(self) -> float:
+        """
+        Computes a lower bound for the makespan T based on shortest round trips.
+        T >= max(shortest_round_trip(0 -> j -> 0)) for all j
+        """
+        try:
+            dists_from_base = nx.shortest_path_length(
+                self.graph, source=0, weight="weight"
+            )
+            dists_to_base = nx.shortest_path_length(
+                self.graph.reverse(), source=0, weight="weight"
+            )
+
+            max_min_trip = 0.0
+            for j in range(1, self.num_nodes):
+                if j in dists_from_base and j in dists_to_base:
+                    trip = dists_from_base[j] + dists_to_base[j]
+                    max_min_trip = max(max_min_trip, trip)
+
+            return max_min_trip
+        except Exception:
+            print("An error occurred: Could not compute lower bound for makespan T.")
+            return 0.0
+
+    def _extract_solution(self, x):
+        paths = []
+        for k in range(self.k_drones):
+            # Build adjacency (each arc used at most once)
+            adj = {}
+            for (d, u, v), var in x.items():
+                if d == k and var.x is not None and var.x > 0.5:
+                    adj.setdefault(u, []).append(v)
+
+            if 0 not in adj or not adj[0]:
+                path = [0, 0]
+                paths.append(path)
+                if self.verbose:
+                    print(f"Drone {k+1}: {'-'.join(map(str, path))}")
+                continue
+
+            # Simple path reconstruction since degrees are 1 (Eulerian but without repeats)
+            path = [0]
+            current = 0
+            while current in adj and adj[current]:
+                nxt = adj[current].pop()
+                path.append(nxt)
+                current = nxt
+                if current == 0:
+                    break
+
+            if current != 0:
+                path.append(0)  # safety fallback
+
+            if self.verbose:
+                print(f"Drone {k+1}: {'-'.join(map(str, path))}")
+            paths.append(path)
+
+        return paths
+
     def get_graph(self):
         """
         Returns the graph representation: nodes, arcs, and costs.
@@ -300,6 +380,12 @@ class DroneRoutingSolver:
                 - Set of entry point indices
         """
         return self.points, self.arcs, self.costs, self.entry_points_idx
+
+    def prune_graph(self, top_out_degree=2, top_in_degree=3):
+        """Public method to prune the graph using the deterministic heuristic."""
+        self._prune_arcs_heuristic(top_out_degree=top_out_degree, top_in_degree=top_in_degree)
+        # Refresh arc-related structures after pruning
+        self._refresh_arc_data()
 
     def solve(
         self,
@@ -491,62 +577,3 @@ class DroneRoutingSolver:
             if self.verbose:
                 print("No solution found.")
             return []
-
-    def _get_makespan_lower_bound(self) -> float:
-        """
-        Computes a lower bound for the makespan T based on shortest round trips.
-        T >= max(shortest_round_trip(0 -> j -> 0)) for all j
-        """
-        try:
-            dists_from_base = nx.shortest_path_length(
-                self.graph, source=0, weight="weight"
-            )
-            dists_to_base = nx.shortest_path_length(
-                self.graph.reverse(), source=0, weight="weight"
-            )
-
-            max_min_trip = 0.0
-            for j in range(1, self.num_nodes):
-                if j in dists_from_base and j in dists_to_base:
-                    trip = dists_from_base[j] + dists_to_base[j]
-                    max_min_trip = max(max_min_trip, trip)
-
-            return max_min_trip
-        except Exception:
-            print("An error occurred: Could not compute lower bound for makespan T.")
-            return 0.0
-
-    def _extract_solution(self, x):
-        paths = []
-        for k in range(self.k_drones):
-            # Build adjacency (each arc used at most once)
-            adj = {}
-            for (d, u, v), var in x.items():
-                if d == k and var.x is not None and var.x > 0.5:
-                    adj.setdefault(u, []).append(v)
-
-            if 0 not in adj or not adj[0]:
-                path = [0, 0]
-                paths.append(path)
-                if self.verbose:
-                    print(f"Drone {k+1}: {'-'.join(map(str, path))}")
-                continue
-
-            # Simple path reconstruction since degrees are 1 (Eulerian but without repeats)
-            path = [0]
-            current = 0
-            while current in adj and adj[current]:
-                nxt = adj[current].pop()
-                path.append(nxt)
-                current = nxt
-                if current == 0:
-                    break
-
-            if current != 0:
-                path.append(0)  # safety fallback
-
-            if self.verbose:
-                print(f"Drone {k+1}: {'-'.join(map(str, path))}")
-            paths.append(path)
-
-        return paths
