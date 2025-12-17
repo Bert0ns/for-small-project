@@ -7,7 +7,7 @@ from utils import Point3D, calc_time_between_points
 
 class DroneRoutingSolver:
     """
-    Solver
+    Solver implementing mTSP with optional drones and NO revisits (simple cycles).
     """
 
     def __init__(
@@ -39,6 +39,83 @@ class DroneRoutingSolver:
         self.graph = nx.DiGraph()
         self._build_graph()
 
+    def _prune_arcs_heuristic(self, top_out_degree=2, top_in_degree=3):
+        """Deterministic prune: keep shortest-path edges (to/from base) and cap cheap out/in degrees. Revert if reachability is lost."""
+        G_orig = self.graph
+        G = G_orig.copy()
+
+        try:
+            dist_fwd = nx.single_source_dijkstra_path_length(G, 0, weight="weight")
+            dist_bwd = nx.single_source_dijkstra_path_length(
+                G.reverse(copy=False), 0, weight="weight"
+            )
+        except nx.NetworkXNoPath:
+            if self.verbose:
+                print("Warning: Graph not fully connected before pruning; skipping pruning.")
+            return
+
+        # If not all nodes reachable both ways, skip pruning
+        if len(dist_fwd) < self.num_nodes or len(dist_bwd) < self.num_nodes:
+            if self.verbose:
+                print("Warning: Incomplete reachability before pruning; skipping pruning.")
+            return
+
+        mandatory_edges = set()
+        # Edges on any shortest path base -> v
+        for u, v, data in G.edges(data=True):
+            w = data["weight"]
+            if u in dist_fwd and v in dist_fwd and abs(dist_fwd[u] + w - dist_fwd[v]) < 1e-9:
+                mandatory_edges.add((u, v))
+        # Edges on any shortest path v -> base (using reversed distances)
+        for u, v, data in G.edges(data=True):
+            w = data["weight"]
+            # in reversed graph, edge is v -> u
+            if v in dist_bwd and u in dist_bwd and abs(dist_bwd[v] + w - dist_bwd[u]) < 1e-9:
+                mandatory_edges.add((u, v))
+
+        # Outgoing pruning per node (non-base)
+        for u in range(1, self.num_nodes):
+            out_e = list(G.out_edges(u, data=True))
+            if not out_e:
+                continue
+            keep_targets = {v for (a, v) in mandatory_edges if a == u}
+            out_e.sort(key=lambda t: (t[2]["weight"], t[1]))  # deterministic
+            cutoff_idx = min(top_out_degree, len(out_e)) - 1
+            cutoff_w = out_e[cutoff_idx][2]["weight"]
+            keep_targets |= {v for (_, v, data) in out_e if data["weight"] <= cutoff_w}
+            for _, v, _ in out_e:
+                if v not in keep_targets:
+                    G.remove_edge(u, v)
+
+        # Incoming pruning per node (non-base)
+        for v in range(1, self.num_nodes):
+            in_e = list(G.in_edges(v, data=True))
+            if not in_e:
+                continue
+            keep_sources = {u for (u, b) in mandatory_edges if b == v}
+            in_e.sort(key=lambda t: (t[2]["weight"], t[0]))  # deterministic
+            cutoff_idx = min(top_in_degree, len(in_e)) - 1
+            cutoff_w = in_e[cutoff_idx][2]["weight"]
+            keep_sources |= {u for (u, _, data) in in_e if data["weight"] <= cutoff_w}
+            for u, _, _ in in_e:
+                if u not in keep_sources:
+                    G.remove_edge(u, v)
+
+        # Verify reachability after pruning
+        dist_fwd_after = nx.single_source_dijkstra_path_length(G, 0, weight="weight")
+        dist_bwd_after = nx.single_source_dijkstra_path_length(
+            G.reverse(copy=False), 0, weight="weight"
+        )
+        if len(dist_fwd_after) == self.num_nodes and len(dist_bwd_after) == self.num_nodes:
+            self.graph = G
+            if self.verbose:
+                print(
+                    f"Graph pruned deterministically (top_out={top_out_degree}, top_in={top_in_degree}); reachability preserved."
+                )
+        else:
+            if self.verbose:
+                print("Pruning would disconnect the graph; reverting to the original graph.")
+
     def _build_graph(self):
         """Builds the graph nodes, arcs and calculates travel times using vectorized operations."""
         if self.verbose:
@@ -69,8 +146,6 @@ class DroneRoutingSolver:
         is_connected = cond1 | cond2
 
         # We only care about i < j for the loop, but we need both directions
-        # Get indices where is_connected is True and i < j
-        # np.triu ensures i <= j, k=1 ensures i < j
         rows, cols = np.where(np.triu(is_connected, k=1))
 
         if self.verbose:
@@ -93,10 +168,8 @@ class DroneRoutingSolver:
             self.graph.add_edge(int(i), int(j), weight=cost_ij)
             self.graph.add_edge(int(j), int(i), weight=cost_ji)
 
-        # 2. Identify entry points and add edges to base (node 0)
-        # Vectorized check for entry points
+        # Identify entry points and add edges to base (node 0)
         y_coords = coords[:, 1]
-        # indices where y <= threshold and i > 0
         entry_indices = np.where(
             (y_coords <= self.entry_threshold) & (np.arange(self.num_nodes) > 0)
         )[0]
@@ -121,12 +194,8 @@ class DroneRoutingSolver:
                 f"NetworkX Graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges"
             )
 
-        # 3. Populate arcs and costs for the MIP solver
-        self.out_edges = {i: [] for i in range(self.num_nodes)}
-        for u, v, data in self.graph.edges(data=True):
-            self.arcs.add((u, v))
-            self.costs[(u, v)] = data["weight"]
-            self.out_edges[u].append(v)
+        # Populate arcs and costs for the MIP solver
+        self._refresh_arc_data()
 
         if not self.entry_points_idx:
             raise ValueError(
@@ -136,130 +205,15 @@ class DroneRoutingSolver:
         if self.verbose:
             print(f"Total directed arcs for MIP: {len(self.arcs)}")
 
-    def _generate_greedy_solution(self):
-        """
-        Generates a feasible solution using a greedy tree-expansion heuristic.
-        Each drone builds a tree of visited nodes, traversing edges back and forth.
-        This guarantees connectivity and respects the strict ownership constraint (no visiting others' nodes).
-        """
-        if self.verbose:
-            print("Generating greedy initial solution...")
-
-        # Data structures
-        # owned_nodes[k] = set of nodes owned by drone k
-        owned_nodes = {k: {0} for k in range(self.k_drones)}
-
-        # edges_count[k][(u, v)] = count
-        edges_count = {k: {} for k in range(self.k_drones)}
-
-        # drone_times[k] = current total time
-        drone_times = {k: 0.0 for k in range(self.k_drones)}
-
-        unvisited = set(range(1, self.num_nodes))
-
-        # Precompute valid neighbors for fast lookup
-        # neighbors[u] = [(v, cost_uv, cost_vu), ...]
-        neighbors = {u: [] for u in range(self.num_nodes)}
-        for (u, v), cost in self.costs.items():
-            if (v, u) in self.costs:  # Ensure bidirectional for "there and back"
-                neighbors[u].append((v, cost, self.costs[(v, u)]))
-
-        while unvisited:
-            best_move = None
-            best_obj = float("inf")
-
-            # Find best node to add
-            candidate_found = False
-
-            current_max = max(drone_times.values())
-
-            for k in range(self.k_drones):
-                # Optimization: Iterate through owned nodes of all drones to find neighbors in unvisited
-                for v in owned_nodes[k]:
-                    # Constraint: Cannot branch from base (0) if already has a branch
-                    # This ensures degree of base is exactly 2 (1 out, 1 in)
-                    if v == 0 and len(owned_nodes[k]) > 1:
-                        continue
-
-                    for u, cost_vu, cost_uv in neighbors[v]:
-                        if u in unvisited:
-                            # Cost to add u: go v->u and u->v
-                            added_cost = cost_vu + cost_uv
-                            new_time = drone_times[k] + added_cost
-
-                            # Objective: minimize the new global makespan
-                            new_obj = max(new_time, current_max)
-
-                            # Tie-breaker: prefer smaller added_cost
-                            if new_obj < best_obj or (
-                                new_obj == best_obj
-                                and added_cost
-                                < (best_move[3] if best_move else float("inf"))
-                            ):
-                                best_obj = new_obj
-                                best_move = (k, v, u, added_cost)
-                                candidate_found = True
-
-            if not candidate_found:
-                if self.verbose:
-                    print(
-                        "Warning: Greedy heuristic got stuck. Graph might not be connected."
-                    )
-                break
-
-            # Apply best move
-            k, v, u, added_cost = best_move
-            owned_nodes[k].add(u)
-            unvisited.remove(u)
-            drone_times[k] += added_cost
-
-            # Add edges (v, u) and (u, v)
-            edges_count[k][(v, u)] = edges_count[k].get((v, u), 0) + 1
-            edges_count[k][(u, v)] = edges_count[k].get((u, v), 0) + 1
-
-        if unvisited:
-            if self.verbose:
-                print(
-                    f"Greedy heuristic failed to visit {len(unvisited)} nodes. Skipping warm start."
-                )
-            return None
-
-        # Sort drones by number of owned nodes (descending) to satisfy symmetry breaking
-        # We need to sort the keys of owned_nodes and edges_count together
-
-        # Get list of (k, num_nodes)
-        drone_sizes = [(k, len(owned_nodes[k])) for k in range(self.k_drones)]
-        # Sort by size desc
-        drone_sizes.sort(key=lambda x: x[1], reverse=True)
-
-        # Create mapping: new_k -> old_k
-        new_to_old = {new_k: old_k for new_k, (old_k, _) in enumerate(drone_sizes)}
-
-        # Convert to solution format
-        x_sol = {}
-        y_sol = {}
-        z_sol = {}
-
-        for new_k in range(self.k_drones):
-            old_k = new_to_old[new_k]
-
-            # z
-            is_active = len(owned_nodes[old_k]) > 1  # Has more than just base
-            z_sol[new_k] = 1.0 if is_active else 0.0
-
-            # y
-            for node in owned_nodes[old_k]:
-                if node != 0:
-                    y_sol[(new_k, node)] = 1.0
-
-            # x
-            for (u, v), count in edges_count[old_k].items():
-                x_sol[(new_k, u, v)] = float(count)
-
-        # Calculate makespan of the greedy solution
-        greedy_makespan = max(drone_times.values())
-
-        return x_sol, y_sol, z_sol, greedy_makespan
+    def _refresh_arc_data(self):
+        """Rebuild arc-related structures from the current graph."""
+        self.arcs = set()
+        self.costs = {}
+        self.out_edges = {i: [] for i in range(self.num_nodes)}
+        for u, v, data in self.graph.edges(data=True):
+            self.arcs.add((u, v))
+            self.costs[(u, v)] = data["weight"]
+            self.out_edges[u].append(v)
 
     def _generate_no_revisit_greedy_solution(self):
         """
@@ -269,13 +223,11 @@ class DroneRoutingSolver:
         if self.verbose:
             print("Generating no-revisit greedy initial solution...")
 
-        # Initialize
         routes = {k: [0] for k in range(self.k_drones)}
         drone_times = {k: 0.0 for k in range(self.k_drones)}
         unvisited = set(range(1, self.num_nodes))
 
         # Precompute neighbors for fast lookup (only outgoing edges needed)
-        # neighbors[u] = [(v, cost), ...]
         neighbors = {u: [] for u in range(self.num_nodes)}
         for (u, v), cost in self.costs.items():
             neighbors[u].append((v, cost))
@@ -283,21 +235,17 @@ class DroneRoutingSolver:
         while unvisited:
             best_move = None
             best_new_makespan = float("inf")
-
             current_max_time = max(drone_times.values())
-
             candidate_found = False
 
             for k in range(self.k_drones):
                 u = routes[k][-1]
-
-                # Check all reachable unvisited nodes
+                # Only consider moves that do not revisit nodes
                 for v, cost in neighbors[u]:
                     if v in unvisited:
                         new_time = drone_times[k] + cost
                         new_makespan = max(new_time, current_max_time)
 
-                        # Minimize makespan, then cost
                         if new_makespan < best_new_makespan:
                             best_new_makespan = new_makespan
                             best_move = (k, v, cost)
@@ -309,20 +257,20 @@ class DroneRoutingSolver:
 
             if not candidate_found:
                 if self.verbose:
-                    print("No-revisit heuristic stuck: cannot reach any unvisited node.")
+                    print(
+                        "No-revisit heuristic stuck: cannot reach any unvisited node."
+                    )
                 return None
 
-            # Apply move
             k, v, cost = best_move
             routes[k].append(v)
             drone_times[k] += cost
             unvisited.remove(v)
 
-        # Return to base
+        # Return to base (must be possible from last node; otherwise fail)
         for k in range(self.k_drones):
             u = routes[k][-1]
             if u != 0:
-                # Check if return to base is possible
                 if (u, 0) in self.costs:
                     cost = self.costs[(u, 0)]
                     routes[k].append(0)
@@ -334,16 +282,11 @@ class DroneRoutingSolver:
                         )
                     return None
 
-        # Sort drones by number of visited nodes (descending) for symmetry breaking
-        # Note: routes[k] includes 0 at start and end. Number of visited target nodes is len(routes[k]) - 2.
-        # Actually, just len(routes[k]) is fine for sorting since they all start/end at 0.
-
+        # Sort drones by route length for symmetry breaking
         drone_sizes = [(k, len(routes[k])) for k in range(self.k_drones)]
         drone_sizes.sort(key=lambda x: x[1], reverse=True)
-
         new_to_old = {new_k: old_k for new_k, (old_k, _) in enumerate(drone_sizes)}
 
-        # Convert to solution format
         x_sol = {}
         y_sol = {}
         z_sol = {}
@@ -352,304 +295,24 @@ class DroneRoutingSolver:
             old_k = new_to_old[new_k]
             route = routes[old_k]
 
-            # z: active if route has more than [0, 0]
-            is_active = len(route) > 2
+            is_active = len(route) > 2  # has at least one target
             z_sol[new_k] = 1.0 if is_active else 0.0
 
-            # y: all nodes in route except 0
             for node in route:
                 if node != 0:
                     y_sol[(new_k, node)] = 1.0
 
-            # x: edges in route
             for i in range(len(route) - 1):
                 u, v = route[i], route[i + 1]
-                x_sol[(new_k, u, v)] = 1.0  # In no-revisit, count is always 1
+                x_sol[(new_k, u, v)] = 1.0  # no revisits -> at most one traversal
 
         greedy_makespan = max(drone_times.values())
-
         return x_sol, y_sol, z_sol, greedy_makespan
-
-    def get_graph(self):
-        """
-        Returns the graph representation: nodes, arcs, and costs.
-
-        Returns:
-            Tuple containing:
-                - List of points (nodes)
-                - Set of arcs (tuples of node indices)
-                - Dictionary of costs for each arc
-                - Set of entry point indices
-        """
-        return self.points, self.arcs, self.costs, self.entry_points_idx
-
-    def solve(
-        self, max_seconds: int = 300, mip_gap: float = 0.02, warm_start: bool = True
-    ):
-        """
-        Builds and solves the MIP model for the Drone Routing Problem.
-
-        Args:
-            max_seconds (int): Maximum time allowed for the solver in seconds.
-            mip_gap (float): Relative MIP gap tolerance (trade optimality for speed).
-            warm_start (bool): Whether to generate and use a greedy initial solution.
-        """
-
-        model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
-        model.max_mip_gap = mip_gap
-        model.threads = -1
-        model.verbose = self.verbose
-        model.cuts = 2  # Aggressive cut generation
-        # model.presolve = -1  # Enable presolve
-
-        # Sets
-        K = range(self.k_drones)
-        V = range(self.num_nodes)
-        P = [i for i in V if i != 0]  # Target points
-
-        # Precompute in-edges for faster constraint building
-        in_edges = {i: [] for i in V}
-        for u, v in self.arcs:
-            in_edges[v].append(u)
-
-        # Variables
-        # x[k, i, j]: Number of times drone k flies arc (i, j)
-        x = {}
-        for k in K:
-            for i, j in self.arcs:
-                x[(k, i, j)] = model.add_var(
-                    var_type=mip.INTEGER, lb=0.0, name=f"x_{k}_{i}_{j}"
-                )
-
-        # y[k, j]: 1 if grid node j is owned by drone k
-        y = {}
-        for k in K:
-            for j in P:
-                y[(k, j)] = model.add_var(var_type=mip.BINARY, name=f"y_{k}_{j}")
-
-        # T: makespan
-        T = model.add_var(var_type=mip.CONTINUOUS, lb=0.0, name="T")
-
-        # z[k]: 1 if drone k is used
-        z = {k: model.add_var(var_type=mip.BINARY, name=f"z_{k}") for k in K}
-
-        # f[k, i, j]: flow variables for connectivity
-        f = {}
-        for k in K:
-            for i, j in self.arcs:
-                f[(k, i, j)] = model.add_var(
-                    var_type=mip.CONTINUOUS, lb=0.0, name=f"f_{k}_{i}_{j}"
-                )
-
-        # Objective: pure minimax (no secondary tie-breaker)
-        model.objective = T
-
-        # Constraints
-
-        # 1. Exclusive assignment
-        for j in P:
-            model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
-
-        # 2. Tour Connectivity & Ownership (Revisits Allowed)
-        M_visits = len(P)  # Sufficiently large number (increased for safety)
-        for k in K:
-            for j in P:
-                outgoing = self.out_edges[j]
-
-                # Flow Balance: Incoming == Outgoing
-                model.add_constr(
-                    mip.xsum(x[(k, i, j)] for i in in_edges[j])
-                    == mip.xsum(x[(k, j, m)] for m in outgoing),
-                    name=f"flow_balance_{k}_{j}",
-                )
-
-                # Service Requirement: If owned, must enter at least once
-                model.add_constr(
-                    y[(k, j)] <= mip.xsum(x[(k, i, j)] for i in in_edges[j]),
-                    name=f"service_min_{k}_{j}",
-                )
-
-                # Exclusivity: If not owned, cannot enter
-                model.add_constr(
-                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) <= M_visits * y[(k, j)],
-                    name=f"service_max_{k}_{j}",
-                )
-
-        # 3. Base Station Constraints
-        for k in K:
-            # Depart from base exactly once
-            base_outgoing = self.out_edges[0]
-            model.add_constr(
-                mip.xsum(x[(k, 0, j)] for j in base_outgoing) == z[k],
-                name=f"base_out_{k}",
-            )
-
-            # Return to base exactly once
-            base_incoming = in_edges[0]
-            model.add_constr(
-                mip.xsum(x[(k, i, 0)] for i in base_incoming) == z[k],
-                name=f"base_in_{k}",
-            )
-
-        # 4. Subtour Elimination (Single-Commodity Flow)
-        for k in K:
-            # Supply at base = number of owned nodes
-            base_outgoing = self.out_edges[0]
-            model.add_constr(
-                mip.xsum(f[(k, 0, j)] for j in base_outgoing)
-                == mip.xsum(y[(k, p)] for p in P),
-                name=f"flow_supply_{k}",
-            )
-
-            # Flow conservation on owned nodes: In - Out = Owned
-            for v in P:
-                outgoing = self.out_edges[v]
-                model.add_constr(
-                    mip.xsum(f[(k, i, v)] for i in in_edges[v])
-                    - mip.xsum(f[(k, v, j)] for j in outgoing)
-                    == y[(k, v)],
-                    name=f"flow_conservation_{k}_{v}",
-                )
-
-            # Capacity linking
-            for i, j in self.arcs:
-                model.add_constr(
-                    f[(k, i, j)] <= len(P) * x[(k, i, j)],
-                    name=f"flow_capacity_{k}_{i}_{j}",
-                )
-
-        # 5. Makespan linking
-        for k in K:
-            model.add_constr(
-                T
-                >= mip.xsum(self.costs[(i, j)] * x[(k, i, j)] for (i, j) in self.arcs),
-                name=f"makespan_{k}",
-            )
-
-        # 6. Symmetry Breaking
-        # Order drones by number of visited nodes: |P_k| >= |P_{k+1}|
-        for k in range(self.k_drones - 1):
-            model.add_constr(
-                mip.xsum(y[(k, j)] for j in P) >= mip.xsum(y[(k + 1, j)] for j in P),
-                name=f"symmetry_size_{k}",
-            )
-
-        # Additional symmetry: enforce activation ordering z_k >= z_{k+1}
-        for k in range(self.k_drones - 1):
-            model.add_constr(z[k] >= z[k + 1], name=f"symmetry_active_{k}")
-
-        # Activation linking: a drone must be active to own nodes
-        big_m_nodes = float(len(P))
-        for k in K:
-            model.add_constr(
-                mip.xsum(y[(k, j)] for j in P) <= big_m_nodes * z[k],
-                name=f"activation_{k}",
-            )
-            model.add_constr(
-                mip.xsum(y[(k, j)] for j in P) >= z[k],
-                name=f"activation_lower_{k}",
-            )
-
-        # Warm Start
-        if warm_start:
-            try:
-                # Try the no-revisit heuristic first (often better quality if feasible)
-                greedy_result = self._generate_no_revisit_greedy_solution()
-                
-                # If that fails, fall back to the tree-expansion heuristic (more robust)
-                if not greedy_result:
-                    if self.verbose:
-                        print("No-revisit heuristic failed. Falling back to tree-expansion heuristic.")
-                    greedy_result = self._generate_greedy_solution()
-
-                if greedy_result:
-                    x_sol, y_sol, z_sol, greedy_makespan = greedy_result
-                    start_list = []
-
-                    # Add x variables
-                    for (k, u, v), val in x_sol.items():
-                        if (k, u, v) in x:
-                            start_list.append((x[(k, u, v)], val))
-
-                    # Add y variables
-                    for (k, j), val in y_sol.items():
-                        if (k, j) in y:
-                            start_list.append((y[(k, j)], val))
-
-                    # Add z variables
-                    for k, val in z_sol.items():
-                        if k in z:
-                            start_list.append((z[k], val))
-
-                    model.start = start_list
-
-                    # Set Upper Bound from Greedy Solution
-                    # This significantly prunes the search tree
-                    T.ub = greedy_makespan
-
-                    if self.verbose:
-                        print(
-                            f"Warm start solution provided with {len(start_list)} variables. UB set to {greedy_makespan:.2f}"
-                        )
-            except Exception as e:
-                if self.verbose:
-                    print(f"Failed to generate warm start solution: {e}")
-
-        max_min_trip = self._get_makespan_lower_bound()
-        if self.verbose:
-            print(f"Setting lower bound for makespan T to {max_min_trip:.2f}")
-        T.lb = max_min_trip
-
-        # Solve
-        status = model.optimize(max_seconds=float(max_seconds))
-
-        if (
-            status == mip.OptimizationStatus.OPTIMAL
-            or status == mip.OptimizationStatus.FEASIBLE
-        ):
-            if self.verbose:
-                print(f"Solution found! Objective: {model.objective_value}")
-            return self._extract_solution(x, z)
-        else:
-            if self.verbose:
-                print("No solution found.")
-            return []
 
     def _get_makespan_lower_bound(self) -> float:
         """
         Computes a lower bound for the makespan T based on shortest round trips.
         T >= max(shortest_round_trip(0 -> j -> 0)) for all j
-        This helps the solver prune branches that can't possibly be optimal.
-        Since node 0 is only connected to entry points, this implicitly finds
-        the optimal entry and exit points for each node j.
-
-        Here is the step-by-step reasoning:
-
-        1. Definition of Makespan:
-            T is the time taken by the slowest drone. In other words,
-            T ≥ Time(Drone k) for all drones k
-        2. Mandatory Visit: Every node j in the grid must be visited by some drone.
-        3. Minimum Time for Node j: For a drone to visit node j, it must start at the base (0), get to j,
-            and eventually return to the base (0). The absolute minimum time this takes is the shortest path from Base → j plus the shortest path from j → Base.
-            MinTrip(j)=dist(0,j)+dist(j,0)
-        4. The Bottleneck: Since
-            T must be greater than the travel time of any drone, and some drone has to visit the "furthest" node (the one with the largest round-trip time), the makespan cannot be smaller than that largest round-trip time.
-
-        Example:
-            Node A takes at least 10 minutes to visit and return.
-            Node B takes at least 50 minutes to visit and return.
-            Node C takes at least 20 minutes to visit and return.
-            Even if we send one drone just to visit Node B and come back immediately (the most efficient possible route for B), that drone will take 50 minutes.
-            Since
-            T is the maximum of all drone times, T must be at least 50 minutes.
-
-        Therefore:
-            T ≥ max_j∈P_(MinTrip(j))
-
-        That is why we compute the minimum round-trip for every node and take the maximum of those values to set the lower bound.
-
-        Returns:
-            A float representing the lower bound for makespan T.
         """
         try:
             dists_from_base = nx.shortest_path_length(
@@ -670,46 +333,247 @@ class DroneRoutingSolver:
             print("An error occurred: Could not compute lower bound for makespan T.")
             return 0.0
 
-    def _extract_solution(self, x, z):
+    def _extract_solution(self, x):
         paths = []
         for k in range(self.k_drones):
-            active = z[k].x is not None and z[k].x > 0.5
-            # Build multigraph adjacency list for this drone
+            # Build adjacency (each arc used at most once)
             adj = {}
             for (d, u, v), var in x.items():
                 if d == k and var.x is not None and var.x > 0.5:
-                    count = int(round(var.x))
-                    if u not in adj:
-                        adj[u] = []
-                    for _ in range(count):
-                        adj[u].append(v)
+                    adj.setdefault(u, []).append(v)
 
             if 0 not in adj or not adj[0]:
                 path = [0, 0]
+                paths.append(path)
                 if self.verbose:
                     print(f"Drone {k+1}: {'-'.join(map(str, path))}")
-                paths.append(path)
                 continue
 
-            # Hierholzer's algorithm for Eulerian path/circuit
-            # Since we start at 0 and must return to 0, it's a circuit.
-            stack = [0]
-            circuit = []
+            # Simple path reconstruction since degrees are 1 (Eulerian but without repeats)
+            path = [0]
+            current = 0
+            while current in adj and adj[current]:
+                nxt = adj[current].pop()
+                path.append(nxt)
+                current = nxt
+                if current == 0:
+                    break
 
-            while stack:
-                u = stack[-1]
-                if u in adj and adj[u]:
-                    v = adj[u].pop()
-                    stack.append(v)
-                else:
-                    circuit.append(stack.pop())
-
-            # The circuit is built in reverse order of finishing
-            path = circuit[::-1]
+            if current != 0:
+                path.append(0)  # safety fallback
 
             if self.verbose:
-                path_str = "-".join(map(str, path))
-                print(f"Drone {k+1}: {path_str}")
+                print(f"Drone {k+1}: {'-'.join(map(str, path))}")
             paths.append(path)
 
         return paths
+
+    def get_graph(self):
+        """
+        Returns the graph representation: nodes, arcs, and costs.
+
+        Returns:
+            Tuple containing:
+                - List of points (nodes)
+                - Set of arcs (tuples of node indices)
+                - Dictionary of costs for each arc
+                - Set of entry point indices
+        """
+        return self.points, self.arcs, self.costs, self.entry_points_idx
+
+    def prune_graph(self, top_out_degree=2, top_in_degree=3):
+        """Public method to prune the graph using the deterministic heuristic."""
+        self._prune_arcs_heuristic(top_out_degree=top_out_degree, top_in_degree=top_in_degree)
+        # Refresh arc-related structures after pruning
+        self._refresh_arc_data()
+
+    def solve(
+        self,
+        max_seconds: int = 300,
+        mip_gap: float = 0.02,
+        warm_start: bool = True,
+        prune: bool = True,
+        max_out_degree: int = 25,
+        cost_factor: float = 45.0,
+    ):
+        """
+        Builds and solves the MIP model for the mTSP variant:
+        - Optional drones
+        - No revisits of target nodes (binary x, degree = 1 in/out for owned nodes)
+        - Minimize makespan
+        """
+        model = mip.Model(sense=mip.MINIMIZE, solver_name=mip.CBC)
+        model.max_mip_gap = mip_gap
+        model.threads = -1
+        model.verbose = self.verbose
+        model.cuts = 2  # Aggressive cut generation
+
+        # Sets
+        K = range(self.k_drones)
+        V = range(self.num_nodes)
+        P = [i for i in V if i != 0]  # Target points
+
+        # Precompute in-edges for faster constraint building
+        in_edges = {i: [] for i in V}
+        for u, v in self.arcs:
+            in_edges[v].append(u)
+
+        # Variables
+        # x[k, i, j]: Binary arc usage (no revisits)
+        x = {}
+        for k in K:
+            for i, j in self.arcs:
+                x[(k, i, j)] = model.add_var(var_type=mip.BINARY, name=f"x_{k}_{i}_{j}")
+
+        # y[k, j]: 1 if node j is owned by drone k
+        y = {}
+        for k in K:
+            for j in P:
+                y[(k, j)] = model.add_var(var_type=mip.BINARY, name=f"y_{k}_{j}")
+
+        # T: makespan
+        T = model.add_var(var_type=mip.CONTINUOUS, lb=0.0, name="T")  # type: ignore
+
+        # f[k, i, j]: flow variables for connectivity
+        f = {}
+        for k in K:
+            for i, j in self.arcs:
+                f[(k, i, j)] = model.add_var(
+                    var_type=mip.CONTINUOUS, lb=0.0, name=f"f_{k}_{i}_{j}"  # type: ignore
+                )
+
+        # Objective: pure minimax
+        model.objective = T
+
+        # Constraints
+
+        # 1. Exclusive assignment
+        for j in P:
+            model.add_constr(mip.xsum(y[(k, j)] for k in K) == 1, name=f"assign_{j}")
+
+        # 2. Degree constraints (no revisits): exactly one in and one out if owned; none otherwise
+        for k in K:
+            for j in P:
+                outgoing = self.out_edges[j] if j in self.out_edges else []
+                model.add_constr(
+                    mip.xsum(x[(k, i, j)] for i in in_edges[j]) == y[(k, j)],
+                    name=f"in_degree_{k}_{j}",
+                )
+                model.add_constr(
+                    mip.xsum(x[(k, j, m)] for m in outgoing) == y[(k, j)],
+                    name=f"out_degree_{k}_{j}",
+                )
+
+        # 3. Base Station Constraints (All drones used)
+        for k in K:
+            base_outgoing = self.out_edges[0]
+            model.add_constr(
+                mip.xsum(x[(k, 0, j)] for j in base_outgoing) == 1,
+                name=f"base_out_{k}",
+            )
+
+            base_incoming = in_edges[0]
+            model.add_constr(
+                mip.xsum(x[(k, i, 0)] for i in base_incoming) == 1,
+                name=f"base_in_{k}",
+            )
+
+        # 4. Subtour Elimination (Single-Commodity Flow)
+        for k in K:
+            base_outgoing = self.out_edges[0]
+            model.add_constr(
+                mip.xsum(f[(k, 0, j)] for j in base_outgoing)
+                == mip.xsum(y[(k, p)] for p in P),
+                name=f"flow_supply_{k}",
+            )
+
+            for v in P:
+                outgoing = self.out_edges[v] if v in self.out_edges else []
+                model.add_constr(
+                    mip.xsum(f[(k, i, v)] for i in in_edges[v])
+                    - mip.xsum(f[(k, v, j)] for j in outgoing)
+                    == y[(k, v)],
+                    name=f"flow_conservation_{k}_{v}",
+                )
+
+            for i, j in self.arcs:
+                model.add_constr(
+                    f[(k, i, j)] <= len(P) * x[(k, i, j)],
+                    name=f"flow_capacity_{k}_{i}_{j}",
+                )
+
+        # 5. Makespan linking
+        for k in K:
+            model.add_constr(
+                T
+                >= mip.xsum(self.costs[(i, j)] * x[(k, i, j)] for (i, j) in self.arcs),
+                name=f"makespan_{k}",
+            )
+
+        # 6. Symmetry Breaking
+        for k in range(self.k_drones - 1):
+            model.add_constr(
+                mip.xsum(y[(k, j)] for j in P) >= mip.xsum(y[(k + 1, j)] for j in P),
+                name=f"symmetry_size_{k}",
+            )
+
+        # 7. Minimum workload (All drones used)
+        for k in K:
+            # Each drone must visit at least one target node
+            model.add_constr(
+                mip.xsum(y[(k, j)] for j in P) >= 1,
+                name=f"activation_lower_{k}",
+            )
+
+        # 6.5 Valid Inequality: Lower Bound on Z
+        total_time = mip.xsum(
+            self.costs[(i, j)] * x[(k, i, j)] for k in K for (i, j) in self.arcs
+        )
+        model += T >= total_time / self.k_drones  # type: ignore
+
+        # Warm Start
+        if warm_start:
+            try:
+                greedy_result = self._generate_no_revisit_greedy_solution()
+                if greedy_result:
+                    x_sol, y_sol, z_sol, greedy_makespan = greedy_result
+                    start_list = []
+
+                    for (k, u, v), val in x_sol.items():
+                        if (k, u, v) in x:
+                            start_list.append((x[(k, u, v)], val))
+
+                    for (k, j), val in y_sol.items():
+                        if (k, j) in y:
+                            start_list.append((y[(k, j)], val))
+
+                    model.start = start_list
+                    T.ub = greedy_makespan  # type: ignore
+
+                    if self.verbose:
+                        print(
+                            f"Warm start solution provided with {len(start_list)} variables. UB set to {greedy_makespan:.2f}"
+                        )
+            except Exception as e:
+                if self.verbose:
+                    print(f"Failed to generate warm start solution: {e}")
+
+        max_min_trip = self._get_makespan_lower_bound()
+        if self.verbose:
+            print(f"Setting lower bound for makespan T to {max_min_trip:.2f}")
+        T.lb = max_min_trip  # type: ignore
+
+        # Solve
+        status = model.optimize(max_seconds=float(max_seconds))  # type: ignore
+
+        if (
+            status == mip.OptimizationStatus.OPTIMAL
+            or status == mip.OptimizationStatus.FEASIBLE
+        ):
+            if self.verbose:
+                print(f"Solution found! Objective: {model.objective_value}")
+            return self._extract_solution(x)
+        else:
+            if self.verbose:
+                print("No solution found.")
+            return []

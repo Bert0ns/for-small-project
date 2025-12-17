@@ -1,4 +1,4 @@
-# Mathematical Model for Drone Routing Problem (v5 - No Revisits)
+# Mathematical Model for Drone Routing Problem (v6 - No Revisits)
 
 ## Problem Definition
 
