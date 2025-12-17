@@ -3,6 +3,7 @@ import mip
 import networkx as nx
 import numpy as np
 from utils import Point3D, calc_time_between_points
+from sklearn.cluster import KMeans
 
 
 class DroneRoutingSolver:
@@ -40,9 +41,14 @@ class DroneRoutingSolver:
         self._build_graph()
 
     def _prune_arcs_heuristic(self, top_out_degree=2):
-        """PRUNE while preserving connectivity, but keep a few cheap options"""
+        """
+        PRUNE with MST + SPT + k-NN strategy.
+        1. SPT: Keeps shortest paths to/from base (Reachability).
+        2. MST: Keeps Minimum Spanning Tree edges (Structural Connectivity).
+        3. k-NN: Keeps 'top_out_degree' cheapest neighbors (Local Optimization).
+        """
         try:
-            # Shortest-path trees (forward and backward) to ensure reachability
+            # --- 1. Shortest-path trees (SPT) for Base Reachability ---
             paths_from_base = nx.single_source_dijkstra_path(
                 self.graph, 0, weight="weight"
             )
@@ -52,42 +58,77 @@ class DroneRoutingSolver:
 
             mandatory_edges = set()
 
-            # Edges from base -> node (original direction)
+            # Edges from base -> node
             for path in paths_from_base.values():
                 for a, b in zip(path, path[1:]):
                     mandatory_edges.add((a, b))
 
-            # Edges from node -> base (convert from reversed graph paths)
+            # Edges from node -> base
             for path in paths_to_base_rev.values():
-                for a, b in zip(path, path[1:]):  # edges in reversed graph: a -> b
-                    mandatory_edges.add((b, a))  # original direction: b -> a
+                for a, b in zip(path, path[1:]):
+                    mandatory_edges.add((b, a))
 
+            # --- 2. Minimum Spanning Tree (MST) for Global Structure ---
+            # We treat the graph as undirected for the MST heuristic.
+            # This ensures isolated clusters remain connected to each other cheaply.
+            # We use the 'min' weight if edges exist in both directions for the backbone.
+            undir_graph = self.graph.to_undirected(reciprocal=False, as_view=False)
+            mst_edges = nx.minimum_spanning_edges(
+                undir_graph, weight="weight", data=False
+            )
+
+            for u, v in mst_edges:
+                # Add both directions of the MST edge to mandatory set
+                if self.graph.has_edge(u, v):
+                    mandatory_edges.add((u, v))
+                if self.graph.has_edge(v, u):
+                    mandatory_edges.add((v, u))
+
+            if self.verbose:
+                print(
+                    f"Pruning: Marked {len(mandatory_edges)} edges as mandatory (SPT + MST)."
+                )
+
+            # --- 3. k-Nearest Neighbors Pruning ---
+            removed_count = 0
             for u in range(1, self.num_nodes):  # skip base node 0
                 out_e = list(self.graph.out_edges(u, data=True))
                 if not out_e:
                     continue
 
-                # Always keep mandatory edges out of u
+                # Identify targets we MUST keep (SPT or MST edges)
                 keep_targets = {v for (a, v) in mandatory_edges if a == u}
 
-                # Sort by weight and keep up to top_out_degree cheapest (include ties at cutoff)
+                # Sort remaining edges by weight
                 out_e.sort(key=lambda t: t[2]["weight"])
+
+                # Keep top k cheapest (k-NN)
+                # We include ties at the cutoff threshold
                 cutoff_idx = min(top_out_degree, len(out_e)) - 1
                 cutoff_w = out_e[cutoff_idx][2]["weight"]
+
+                # Add k-NN to keep_targets
                 keep_targets |= {
                     v for (_, v, data) in out_e if data["weight"] <= cutoff_w
                 }
 
+                # Remove edges not in the keep set
                 for _, v, _ in out_e:
                     if v not in keep_targets:
                         self.graph.remove_edge(u, v)
+                        removed_count += 1
 
-            print("Graph pruned using heuristic while preserving connectivity. top_out_degree =", top_out_degree)
+            if self.verbose:
+                print(
+                    f"Graph pruned. Removed {removed_count} edges. "
+                    f"Final Edges: {self.graph.number_of_edges()}. "
+                    f"Parameters: top_out_degree={top_out_degree}"
+                )
 
         except nx.NetworkXNoPath:
             if self.verbose:
                 print(
-                    "Warning: Graph not fully connected before pruning; skipping pruning to avoid disconnecting it."
+                    "Warning: Graph not fully connected before pruning; skipping pruning."
                 )
 
     def _build_graph(self):
@@ -508,6 +549,7 @@ class DroneRoutingSolver:
         if warm_start:
             try:
                 greedy_result = self._generate_no_revisit_greedy_solution()
+
                 if greedy_result:
                     x_sol, y_sol, z_sol, greedy_makespan = greedy_result
                     start_list = []
